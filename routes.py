@@ -21,6 +21,7 @@ def allowed_file(filename):
 
 
 @routes_bp.route('/upload', methods=['POST'])
+@login_required
 def upload_file():
     """Upload medical report file and extract parameters using GPT-4o-mini."""
     try:
@@ -39,7 +40,7 @@ def upload_file():
         # Save file
         filename = secure_filename(file.filename)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        user_id = current_user.id if current_user.is_authenticated else 0
+        user_id = current_user.id
         unique_filename = f"{user_id}_{timestamp}_{filename}"
         file_path = os.path.join(current_app.config['UPLOAD_FOLDER'], unique_filename)
         
@@ -66,41 +67,40 @@ def upload_file():
                 'error': f'Failed to extract parameters: {str(e)}'
             }), 500
         
-        # Only save to database if user is authenticated
+        # Persist the report for the authenticated user.
         report_id = None
-        if current_user.is_authenticated:
-            try:
-                report = MedicalReport(
-                    user_id=current_user.id,
-                    filename=filename,
-                    file_path=file_path,
-                    file_type=file_type
-                )
-                db.session.add(report)
-                db.session.flush()
-                report_id = report.id
-                
-                # Update report with extracted values
-                report.hb = parameters.get('hb')
-                report.rbc = parameters.get('rbc')
-                report.wbc = parameters.get('wbc')
-                report.anc = parameters.get('anc')
-                report.platelets = parameters.get('platelets')
-                report.neutrophils_percent = parameters.get('neutrophils_percent')
-                report.hematocrit = parameters.get('hematocrit')
-                report.mcv = parameters.get('mcv')
-                report.mch = parameters.get('mch')
-                report.mchc = parameters.get('mchc')
-                report.ocr_extracted = True
-                report.ocr_confidence = confidence
-                report.extraction_date = datetime.utcnow()
-                report.raw_ocr_text = f"GPT-4o-mini extraction confidence: {confidence:.1f}%"
-                
-                db.session.commit()
-            except Exception as db_error:
-                db.session.rollback()
-                # Continue even if DB save fails
-                print(f"Warning: Could not save to database: {db_error}")
+        try:
+            report = MedicalReport(
+                user_id=current_user.id,
+                filename=filename,
+                file_path=file_path,
+                file_type=file_type
+            )
+            db.session.add(report)
+            db.session.flush()
+            report_id = report.id
+            
+            # Update report with extracted values
+            report.hb = parameters.get('hb')
+            report.rbc = parameters.get('rbc')
+            report.wbc = parameters.get('wbc')
+            report.anc = parameters.get('anc')
+            report.platelets = parameters.get('platelets')
+            report.neutrophils_percent = parameters.get('neutrophils_percent')
+            report.hematocrit = parameters.get('hematocrit')
+            report.mcv = parameters.get('mcv')
+            report.mch = parameters.get('mch')
+            report.mchc = parameters.get('mchc')
+            report.ocr_extracted = True
+            report.ocr_confidence = confidence
+            report.extraction_date = datetime.utcnow()
+            report.raw_ocr_text = f"GPT-4o-mini extraction confidence: {confidence:.1f}%"
+            
+            db.session.commit()
+        except Exception as db_error:
+            db.session.rollback()
+            # Continue even if DB save fails
+            print(f"Warning: Could not save to database: {db_error}")
         
         return jsonify({
             'success': True,

@@ -12,6 +12,7 @@ Features:
 
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_login import LoginManager, login_required, current_user
+from flask_wtf.csrf import CSRFProtect
 from config import config
 from database import db, User
 from auth import auth_bp
@@ -20,11 +21,24 @@ import joblib
 import numpy as np
 import os
 
+def _env_flag(name, default=False):
+    """Read a boolean from the environment. Anything unset is False."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 # Initialize Flask app
 app = Flask(__name__)
-app.config.from_object(config['development'])
+app.config.from_object(config[os.environ.get('FLASK_CONFIG', 'development')])
+# Single source of truth for debug. DevelopmentConfig sets DEBUG = True, so
+# without this line the Werkzeug console is enabled even when app.run() is
+# called with debug=False. Never on unless FLASK_DEBUG explicitly says so.
+app.config['DEBUG'] = _env_flag('FLASK_DEBUG')
 
 # Initialize extensions
+csrf = CSRFProtect(app)
 db.init_app(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -388,7 +402,7 @@ if __name__ == '__main__':
         print("All models loaded successfully!")
         print(f"Loaded models: {list(models.keys())}")
         print("Starting Flask application...")
-        app.run(debug=True, host='0.0.0.0', port=5000)
+        app.run(debug=app.config['DEBUG'], host='0.0.0.0', port=5000)
     except Exception as e:
         print(f"ERROR: Failed to load models: {e}")
         print("Please ensure all model files exist in the models/ directory.")

@@ -1,3 +1,10 @@
+// CSRF token for mutating requests. Flask-WTF checks the X-CSRFToken
+// header; the server renders the value into a meta tag in index.html.
+function csrfToken() {
+    const el = document.querySelector('meta[name="csrf-token"]');
+    return el ? el.getAttribute('content') : '';
+}
+
 // Global state
 let currentUser = null;
 let currentPredictionId = null;
@@ -163,7 +170,7 @@ async function handleLogin(e) {
     try {
         const response = await fetch('/api/auth/login', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
             credentials: 'include',
             body: JSON.stringify({ username, password })
         });
@@ -196,7 +203,7 @@ async function handleRegister(e) {
     try {
         const response = await fetch('/api/auth/register', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
             credentials: 'include',
             body: JSON.stringify({ username, email, full_name: fullName, password })
         });
@@ -221,6 +228,7 @@ async function logout() {
     try {
         await fetch('/api/auth/logout', {
             method: 'POST',
+            headers: { 'X-CSRFToken': csrfToken() },
             credentials: 'include'
         });
         currentUser = null;
@@ -268,7 +276,7 @@ window.triggerPrediction = async function triggerPrediction() {
         
         const response = await fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
             credentials: 'include',
             body: JSON.stringify({ rbc, wbc, platelets, anc, neutrophils_percent })
         });
@@ -413,6 +421,8 @@ async function handleFileSelect(e) {
     try {
         const response = await fetch('/api/upload', {
             method: 'POST',
+            // No Content-Type here: the browser must set the multipart boundary.
+            headers: { 'X-CSRFToken': csrfToken() },
             credentials: 'include',
             body: formData
         });
@@ -674,7 +684,7 @@ async function handleProfileUpdate(e) {
     try {
         const response = await fetch('/api/auth/profile', {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
             credentials: 'include',
             body: JSON.stringify({ email, full_name: fullName })
         });
