@@ -324,6 +324,29 @@ against an explicit-unit boundary rather than retrofitted afterwards.
 - No real patient data in the repo. NHANES and MIMIC are de-identified
   research datasets; anything else is out of bounds.
 
+## Fixes that look done and aren't
+
+Three times now the recorded symptom has not matched the real cause. Check
+the mechanism, not the message.
+
+- **`debug=True` was not the only switch.** Replacing `app.run(debug=True)`
+  with an env flag does not disable the debugger on its own. `app.py` loads
+  `config['development']`, and `DevelopmentConfig` sets `DEBUG = True`, so
+  the Werkzeug console stays reachable through `app.config` under
+  `flask run` — a path that never touches the `app.run()` call. The fix is
+  only real because `app.config['DEBUG']` is now assigned from the same
+  `FLASK_DEBUG` flag immediately after `from_object()`. One source of truth.
+  A security fix that leaves a second enabling path is not a fix.
+- **A console encoding error wearing a model-loading error's face.**
+  `load_models()` printed a `✓` from *inside* its `try`, so on the Windows
+  cp1252 console the `UnicodeEncodeError` from `print` was caught and
+  re-raised as `Error loading anemia model`. Two of three models silently
+  never loaded, and the message pointed at joblib. Status prints belong
+  outside the try that guards the actual work, and stay ASCII.
+- **"Unloadable pickles" was two different failures.** See the sklearn entry
+  under Known issues: one model raises, two load, and the one that loads is
+  the one to worry about.
+
 ## Known issues not yet fixed
 
 - `train_risk_prediction_models.py:43-45` reads three CSVs that are now
@@ -374,8 +397,21 @@ against an explicit-unit boundary rather than retrofitted afterwards.
   the moment someone adds `force=True`, a `request.form` fallback, or
   permissive CORS. The other two are exposed: `/api/upload` (multipart) and
   `/api/auth/logout` (parses no body at all).
-- Pickled models unloadable on newer sklearn
-  (`ModuleNotFoundError: sklearn.ensemble._gb_losses`).
+- **Pickle/sklearn compatibility — corrected 2026-09-21.** This entry used to
+  read "Pickled models unloadable on newer sklearn". Only two of the three
+  are. Verified directly against `models/`, whose artefacts carry a 1.3.2
+  version stamp:
+
+  | Model | Estimator | sklearn 1.9.1 | pinned 1.3.2 |
+  |---|---|---|---|
+  | anemia | RandomForest | **loads, with `InconsistentVersionWarning`** | loads clean |
+  | neutropenia | GradientBoosting | `ModuleNotFoundError: sklearn.ensemble._gb_losses` | loads clean |
+  | thrombocytopenia | GradientBoosting | same | loads clean |
+
+  The RandomForest case is the dangerous one. A `ModuleNotFoundError` stops
+  the app; a warning does not. The anemia model appears to work while
+  scikit-learn itself states its results may be invalid — silent-wrong, the
+  same shape as Findings 4 and 7. "It loaded" is not "it is correct".
 - Dead scaler code path — no scaler files were ever written.
 - Missing models are handled two different ways: `initialize_models()` at
   `app.py:86` warns and continues on import, but the `__main__` block calls
@@ -384,9 +420,23 @@ against an explicit-unit boundary rather than retrofitted afterwards.
 
 ## Environment
 
-The bundled `venv/` is a macOS venv and is not usable — delete it. A real
-`requirements.txt` with pinned versions is needed, **sklearn pinned exactly**,
-given the pickles already broke on a version bump.
+The bundled `venv/` was a macOS venv (`/Users/sulamba/...`, `bin/` not
+`Scripts/`, 280 MB) and has been deleted.
+
+`requirements.txt` is now fully pinned and **targets Python 3.12**, which is
+both the floor and the ceiling: the previous `Werkzeug==2.2.3` pin calls
+`ast.Str`, removed in 3.12, while `scikit-learn==1.3.2` ships wheels only up
+to cp312. Flask and Werkzeug were moved to 3.x to clear the first constraint.
+
+scikit-learn is pinned exactly at 1.3.2 because that is the version that
+wrote the pickles. That pin protects nothing of value and is free to move
+once the NHANES models land — those artefacts were trained on the withdrawn
+dataset with rule-derived labels (Findings 1 and 5) and are being deleted.
+It is kept only because it works on 3.12 and nothing forces a change today.
+
+Verified on Python 3.12.10: clean install, `pip check` reports no broken
+requirements, all three pickles load without warnings, and `import app`
+succeeds with all three models loaded.
 
 ## Conventions
 
