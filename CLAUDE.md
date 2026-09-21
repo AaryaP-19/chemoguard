@@ -188,6 +188,40 @@ files that no longer exist and will raise `FileNotFoundError`. This is
 intended and should not be patched — that loader gets rewritten against NHANES
 under the work order in Direction.
 
+**Models quarantined 2026-09-21.** All fifteen files from `models/` — three
+estimators, three label encoders, their timestamped duplicates, and three
+metadata `.txt` files — now sit at
+`C:\Users\tanii\Downloads\chemoguard-withdrawn-dataset\models\`, alongside
+the CSVs. Each was SHA-256 matched and re-unpickled at the destination
+before the original was deleted; all twelve `.pkl` files load under the
+pinned scikit-learn 1.3.2.
+
+They went because they still worked. The pickles loaded, `/health` reported
+`models_loaded: true`, and the app served predictions — so it looked
+functional while returning arithmetic over a withdrawn dataset. A broken
+artefact announces itself; a working one trained on rule-derived labels does
+not. The estimators corroborate Finding 1 on their face: `n_features_in_` is
+3, 4 and 3, exactly the feature lists at
+`train_risk_prediction_models.py:53`, `:76` and `:104`, and every label is a
+threshold rule over those same columns.
+
+`models/` is now empty, and **absent models are the expected state** until
+the NHANES replacements land. The app was changed to match:
+
+- `app.py` no longer calls `sys.exit(1)` when loading fails. It starts,
+  serves, and prints a notice. Previously `python app.py` would have refused
+  to start at all after the quarantine.
+- `/health` returns `status: "degraded"`, `models_loaded: false`, and a
+  `missing_models` list with an explanation, instead of reporting
+  `"healthy"`. It still returns HTTP 200 — the service is up; read the field,
+  not the status code.
+- `/predict` already returned 503 when models were unavailable, which is the
+  right behaviour and was left alone.
+
+`MODELS_README.md` carries a withdrawal notice at the top: its ">99%
+accuracy" figures are artefacts of rule-derived labels, and its "trained on
+7,196 samples" refers to the withdrawn Mendeley record.
+
 ## Finding 6 — a fifth failed identity, and clamped extremes
 
 **PCT is derived, and does not reconcile.** Plateletcrit is
@@ -413,10 +447,11 @@ the mechanism, not the message.
   scikit-learn itself states its results may be invalid — silent-wrong, the
   same shape as Findings 4 and 7. "It loaded" is not "it is correct".
 - Dead scaler code path — no scaler files were ever written.
-- Missing models are handled two different ways: `initialize_models()` at
-  `app.py:86` warns and continues on import, but the `__main__` block calls
-  `load_models()` and `sys.exit(1)` on failure. So `flask run` starts without
-  models and `python app.py` does not.
+- ~~Missing models are handled two different ways~~ — resolved 2026-09-21.
+  `initialize_models()` warned and continued on import while the `__main__`
+  block called `sys.exit(1)`, so `flask run` started without models and
+  `python app.py` did not. Both paths now start; see the quarantine note in
+  Finding 5.
 
 ## Environment
 

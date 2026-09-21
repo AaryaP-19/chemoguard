@@ -57,6 +57,9 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 
+MODEL_TYPES = ['anemia', 'neutropenia', 'thrombocytopenia']
+
+
 def load_models():
     """Load all trained models and associated files."""
     global models, encoders, scalers
@@ -66,7 +69,7 @@ def load_models():
     encoders.clear()
     scalers.clear()
     
-    model_types = ['anemia', 'neutropenia', 'thrombocytopenia']
+    model_types = MODEL_TYPES
     
     # Get the base directory (where app.py is located)
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -363,13 +366,33 @@ def index():
 
 @app.route('/health')
 def health():
-    """Health check endpoint."""
-    return jsonify({
-        'status': 'healthy',
-        'models_loaded': len(models) > 0,
-        'loaded_models': list(models.keys()) if models else [],
-        'encoders_loaded': list(encoders.keys()) if encoders else []
-    })
+    """Health check.
+
+    Reports the absence of models rather than hiding it. No models is the
+    expected state until the NHANES models land: the previous artefacts were
+    quarantined because they were trained on a withdrawn dataset with
+    rule-derived labels (CLAUDE.md Findings 1 and 5).
+
+    Always returns 200 -- the service itself is up. Read `models_loaded`;
+    do not infer availability from the status code.
+    """
+    missing = [name for name in MODEL_TYPES if name not in models]
+    payload = {
+        'status': 'ok' if not missing else 'degraded',
+        'models_loaded': not missing,
+        'loaded_models': sorted(models),
+        'encoders_loaded': sorted(encoders),
+        'expected_models': list(MODEL_TYPES),
+        'missing_models': missing,
+    }
+    if missing:
+        payload['detail'] = (
+            'Risk prediction is unavailable. The previous models were '
+            'quarantined: they were trained on a dataset withdrawn from '
+            'Mendeley, against labels that were threshold rules over their '
+            'own input features. Awaiting the NHANES-trained replacements.'
+        )
+    return jsonify(payload)
 
 
 @app.route('/reload_models', methods=['POST'])
@@ -400,17 +423,18 @@ if __name__ == '__main__':
         db.create_all()
         print("Database tables created/verified.")
     
-    # Load models on startup
+    # Load models on startup. Their absence no longer aborts startup: since
+    # the quarantine there are no models to load, and that is the expected
+    # state until the NHANES models land. The app serves, /health reports
+    # the gap, and the prediction endpoints refuse with 503 rather than
+    # guessing.
     try:
         load_models()
-        print("All models loaded successfully!")
-        print(f"Loaded models: {list(models.keys())}")
-        print("Starting Flask application...")
-        app.run(debug=app.config['DEBUG'], host='0.0.0.0', port=5000)
+        print(f"Loaded models: {sorted(models)}")
     except Exception as e:
-        print(f"ERROR: Failed to load models: {e}")
-        print("Please ensure all model files exist in the models/ directory.")
-        print("Server will NOT start without models loaded.")
-        import sys
-        sys.exit(1)
+        print(f"NOTICE: starting without models ({e})")
+        print("Risk prediction will return 503. /health reports models_loaded: false.")
+
+    print("Starting Flask application...")
+    app.run(debug=app.config['DEBUG'], host='0.0.0.0', port=5000)
 

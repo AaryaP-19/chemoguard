@@ -1,3 +1,31 @@
+> ## WITHDRAWN — do not rely on anything below
+>
+> **These models have been quarantined and are no longer in the repository.**
+> They were moved on 2026-09-21 to
+> `C:\Users\tanii\Downloads\chemoguard-withdrawn-dataset\models\`, retained
+> only so the audit trail is reproducible. Nothing should train on them,
+> load them, or cite their numbers.
+>
+> **The dataset was withdrawn.** The 7,196 samples referenced throughout this
+> file came from a Mendeley Data record (DOI `10.17632/rnfzzy4wz6`) that has
+> since been removed at the author's request. No licence, collection method,
+> institution or validation procedure survives it. Provenance could not be
+> established.
+>
+> **The accuracy figures below are artefacts, not performance.** Every label
+> was a threshold rule computed from the same columns handed to the model as
+> features — `anemia_risk` from RBC/WBC/Platelets, `neutropenia_risk` from
+> ANC, `thrombocytopenia_risk` from Platelets. A depth-3 decision tree
+> reproduces every published label on 100.00% of rows. The ">99% accuracy"
+> claim measures arithmetic, not learning, and the majority-class baselines
+> were already 69%, 92% and 91%.
+>
+> The data does not hold together either: five CBC identity checks fail, and
+> roughly 90% of rows fail them jointly.
+>
+> See `CLAUDE.md`, Findings 1, 5, 6 and 7. Replacements will be trained on
+> NHANES.
+
 # Hematological Risk Prediction Models
 
 This directory contains trained machine learning models for predicting three types of hematological risks:
@@ -132,10 +160,14 @@ pip install pandas numpy scikit-learn joblib xgboost
 
 ## Notes
 
-- Models are trained on 7,196 samples
+- Models were trained on 7,196 samples from a **withdrawn** dataset (see the
+  notice at the top of this file)
 - 80/20 train/test split was used
 - 5-fold cross-validation was performed
 - Class weights were balanced to handle imbalanced datasets
-- All models achieved excellent performance (>99% accuracy)
+- ~~All models achieved excellent performance (>99% accuracy)~~ — this is
+  false. The labels were threshold rules over the models' own input
+  features, so >99% was arithmetic. Report accuracy against the
+  majority-class baseline (69% / 92% / 91%), never on its own.
 
 
