@@ -82,9 +82,13 @@ def load_models():
         try:
             models[model_type] = joblib.load(model_path)
             encoders[model_type] = joblib.load(encoder_path)
-            print(f"✓ Loaded {model_type} model and encoder")
         except Exception as e:
             raise Exception(f"Error loading {model_type} model: {str(e)}")
+        # ASCII only, and outside the try. The Windows console defaults to
+        # cp1252, where a non-ASCII character raises UnicodeEncodeError; when
+        # that print sat inside the try, the encoding error was caught and
+        # re-raised as "Error loading <model> model", hiding the real cause.
+        print(f"[ok] Loaded {model_type} model and encoder")
         
         # Scaler is optional (only for Logistic Regression)
         if os.path.exists(scaler_path):
