@@ -166,21 +166,9 @@ def predict():
                 'error': 'RBC, WBC, and Platelets are required'
             }), 400
         
-        # Import predict_risk function
-        # Try to import from app_new, fallback to app
-        try:
-            from app_new import predict_risk
-        except ImportError:
-            try:
-                from app import predict_risk
-            except ImportError:
-                # If running as module, get from sys.modules
-                if 'app_new' in sys.modules:
-                    predict_risk = sys.modules['app_new'].predict_risk
-                elif 'app' in sys.modules:
-                    predict_risk = sys.modules['app'].predict_risk
-                else:
-                    raise ImportError("Could not import predict_risk function")
+        # Deferred import: the application module imports this blueprint at
+        # load time, so importing it at module scope would be circular.
+        from app import predict_risk
         
         predictions = predict_risk(rbc, wbc, platelets, anc, neutrophils_percent)
         

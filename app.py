@@ -1,107 +1,120 @@
 """
-Flask web application for hematological risk prediction.
+ChemoGuard - Enhanced Flask web application for hematological risk prediction.
 
-This application provides a web interface to predict:
-- Anemia risk
-- Neutropenia risk
-- Thrombocytopenia risk
-
-Uses the trained machine learning models saved in the models/ directory.
+Features:
+- User authentication and management
+- Medical report upload and OCR extraction
+- Toxicity risk prediction (Anemia, Neutropenia, Thrombocytopenia)
+- Database storage (PostgreSQL)
+- PDF export and sharing
+- Prediction history tracking
 """
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
+from flask_login import LoginManager, login_required, current_user
+from config import config
+from database import db, User
+from auth import auth_bp
+from routes import routes_bp
 import joblib
 import numpy as np
 import os
 
+# Initialize Flask app
 app = Flask(__name__)
+app.config.from_object(config['development'])
+
+# Initialize extensions
+db.init_app(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'auth.login'
+login_manager.login_message = 'Please log in to access this page.'
 
 # Global variables to store loaded models
 models = {}
 encoders = {}
 scalers = {}
 
+
+@login_manager.user_loader
+def load_user(user_id):
+    """Load user for Flask-Login."""
+    return User.query.get(int(user_id))
+
+
 def load_models():
     """Load all trained models and associated files."""
     global models, encoders, scalers
     
+    # Clear existing models
+    models.clear()
+    encoders.clear()
+    scalers.clear()
+    
     model_types = ['anemia', 'neutropenia', 'thrombocytopenia']
     
+    # Get the base directory (where app.py is located)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    
     for model_type in model_types:
-        model_path = f'models/{model_type}_risk_model_latest.pkl'
-        encoder_path = f'models/{model_type}_risk_encoder_latest.pkl'
-        scaler_path = f'models/{model_type}_risk_scaler_latest.pkl'
+        model_path = os.path.join(base_dir, f'models/{model_type}_risk_model_latest.pkl')
+        encoder_path = os.path.join(base_dir, f'models/{model_type}_risk_encoder_latest.pkl')
+        scaler_path = os.path.join(base_dir, f'models/{model_type}_risk_scaler_latest.pkl')
         
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model not found: {model_path}")
         
-        models[model_type] = joblib.load(model_path)
-        encoders[model_type] = joblib.load(encoder_path)
+        try:
+            models[model_type] = joblib.load(model_path)
+            encoders[model_type] = joblib.load(encoder_path)
+            print(f"✓ Loaded {model_type} model and encoder")
+        except Exception as e:
+            raise Exception(f"Error loading {model_type} model: {str(e)}")
         
         # Scaler is optional (only for Logistic Regression)
         if os.path.exists(scaler_path):
             scalers[model_type] = joblib.load(scaler_path)
-        elif
-            
         else:
             scalers[model_type] = None
     
-    print("All models loaded successfully!")
+    print(f"All models loaded successfully! ({len(models)} models)")
+
+
+# Load models when module is imported (works for both python app.py and flask run)
+# This ensures models are loaded regardless of how the app is started
+def initialize_models():
+    """Initialize models on app startup."""
+    try:
+        load_models()
+        print("All models loaded successfully on import!")
+        print(f"Loaded models: {list(models.keys())}")
+        return True
+    except Exception as e:
+        print(f"WARNING: Failed to load models on import: {e}")
+        print("Models will need to be loaded manually or server restarted.")
+        print("You can reload models by calling: POST /reload_models")
+        return False
+
+# Try to load models on import
+_models_loaded = initialize_models()
 
 
 def calculate_anc(wbc, neutrophils_percent):
-    """
-    Calculate Absolute Neutrophil Count (ANC).
-    
-    Parameters:
-    -----------
-    wbc : float
-        White Blood Cell count (cells/μL or thousands/μL)
-    neutrophils_percent : float
-        Neutrophil percentage (0-100)
-    
-    Returns:
-    --------
-    float
-        Absolute Neutrophil Count in thousands/μL
-    """
-    # Convert to cells/μL if needed
+    """Calculate Absolute Neutrophil Count (ANC)."""
     if wbc < 1000:
         wbc_cells = wbc * 1000
     else:
         wbc_cells = wbc
     
-    # Calculate ANC in cells/μL
     anc_cells = wbc_cells * (neutrophils_percent / 100)
-    
-    # Convert to thousands/μL for model input
     anc_thousands = anc_cells / 1000
     
     return anc_thousands
 
 
 def normalize_features(rbc, wbc, platelets, anc=None):
-    """
-    Normalize features to match training data format.
-    Converts all values to thousands/μL for consistency.
-    
-    Parameters:
-    -----------
-    rbc : float
-        Red Blood Cell count (millions/μL)
-    wbc : float
-        White Blood Cell count (cells/μL or thousands/μL)
-    platelets : float
-        Platelet count (cells/μL or thousands/μL)
-    anc : float, optional
-        Absolute Neutrophil Count (cells/μL or thousands/μL)
-    
-    Returns:
-    --------
-    dict
-        Dictionary with normalized features for each model
-    """
-    # Convert to thousands/μL for consistency with training data
+    """Normalize features to match training data format."""
     if wbc > 1000:
         wbc_thousands = wbc / 1000
     else:
@@ -132,38 +145,23 @@ def normalize_features(rbc, wbc, platelets, anc=None):
 def predict_risk(rbc, wbc, platelets, anc=None, neutrophils_percent=None):
     """
     Make predictions for all three risk types.
-    
-    Parameters:
-    -----------
-    rbc : float
-        Red Blood Cell count (millions/μL)
-    wbc : float
-        White Blood Cell count (cells/μL or thousands/μL)
-    platelets : float
-        Platelet count (cells/μL or thousands/μL)
-    anc : float, optional
-        Absolute Neutrophil Count (cells/μL or thousands/μL)
-    neutrophils_percent : float, optional
-        Neutrophil percentage (0-100). Used to calculate ANC if ANC not provided.
-    
-    Returns:
-    --------
-    dict
-        Dictionary with predictions and probabilities for each risk type
+    This function is used by both the old /predict endpoint and the new routes.
     """
-    # Check if models are loaded
+    # Check if models are loaded, try to load them if not
     if not models or 'anemia' not in models:
-        raise ValueError("Models not loaded. Please ensure models are loaded before making predictions.")
+        try:
+            print("Models not loaded, attempting to load now...")
+            load_models()
+            print("Models loaded successfully!")
+        except Exception as load_error:
+            raise ValueError(f"Models not loaded. Failed to load: {str(load_error)}")
     
-    # Calculate ANC if needed
     calculated_anc = None
     if anc is None and neutrophils_percent is not None:
         calculated_anc = calculate_anc(wbc, neutrophils_percent)
-        anc = calculated_anc * 1000  # Convert back to cells/μL for display
+        anc = calculated_anc * 1000
     
-    # Normalize features
     features = normalize_features(rbc, wbc, platelets, anc)
-    
     predictions = {}
     
     # Predict Anemia Risk
@@ -175,7 +173,6 @@ def predict_risk(rbc, wbc, platelets, anc=None, neutrophils_percent=None):
     anemia_pred = anemia_model.predict(anemia_features)[0]
     anemia_risk = encoders['anemia'].inverse_transform([anemia_pred])[0]
     
-    # Get prediction probabilities if available
     if hasattr(anemia_model, 'predict_proba'):
         anemia_proba = anemia_model.predict_proba(anemia_features)[0]
         anemia_proba_dict = dict(zip(encoders['anemia'].classes_, anemia_proba))
@@ -238,17 +235,17 @@ def predict_risk(rbc, wbc, platelets, anc=None, neutrophils_percent=None):
     return predictions
 
 
-@app.route('/')
-def index():
-    """Render the main page."""
-    return render_template('index.html')
+# Register blueprints
+app.register_blueprint(auth_bp, url_prefix='/api/auth')
+app.register_blueprint(routes_bp, url_prefix='/api')
 
 
+# Legacy endpoint (for backward compatibility)
 @app.route('/predict', methods=['POST'])
-def predict():
-    """API endpoint for making predictions."""
+def predict_legacy():
+    """Legacy predict endpoint (backward compatibility)."""
     try:
-        # Check if models are loaded, try to load them if not
+        # Ensure models are loaded
         if not models or len(models) == 0:
             try:
                 print("Models not loaded, attempting to load now...")
@@ -260,13 +257,9 @@ def predict():
                 }), 503
         
         data = request.get_json()
-        
         if not data:
-            return jsonify({
-                'error': 'No JSON data provided'
-            }), 400
+            return jsonify({'error': 'No JSON data provided'}), 400
         
-        # Extract input values
         rbc = float(data.get('rbc', 0))
         wbc = float(data.get('wbc', 0))
         platelets = float(data.get('platelets', 0))
@@ -275,18 +268,24 @@ def predict():
         neutrophils_percent = data.get('neutrophils_percent')
         neutrophils_percent = float(neutrophils_percent) if neutrophils_percent else None
         
-        # Validate required inputs
         if not all([rbc, wbc, platelets]):
-            return jsonify({
-                'error': 'RBC, WBC, and Platelets are required'
-            }), 400
+            return jsonify({'error': 'RBC, WBC, and Platelets are required'}), 400
         
-        # Make predictions
         predictions = predict_risk(rbc, wbc, platelets, anc, neutrophils_percent)
+        
+        # Calculate combined severity for legacy endpoint
+        risk_scores = {'Low': 1, 'Medium': 2, 'High': 3}
+        anemia_score = risk_scores.get(predictions['anemia']['risk'], 1)
+        neutropenia_score = risk_scores.get(predictions.get('neutropenia', {}).get('risk', 'Low'), 1)
+        thrombocytopenia_score = risk_scores.get(predictions['thrombocytopenia']['risk'], 1)
+        max_score = max(anemia_score, neutropenia_score, thrombocytopenia_score)
+        combined_severity = {1: 'Low', 2: 'Moderate', 3: 'High'}[max_score]
         
         return jsonify({
             'success': True,
             'predictions': predictions,
+            'combined_severity': combined_severity,
+            'combined_toxicity': combined_severity,  # Alias for clarity
             'input_values': {
                 'rbc': rbc,
                 'wbc': wbc,
@@ -297,9 +296,51 @@ def predict():
         })
     
     except Exception as e:
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return jsonify({'error': str(e)}), 500
+
+
+# Export and sharing routes
+@app.route('/api/export/pdf/<int:prediction_id>', methods=['GET'])
+@login_required
+def export_pdf(prediction_id):
+    """Export prediction as PDF."""
+    from export import generate_pdf_report
+    
+    try:
+        pdf_buffer = generate_pdf_report(prediction_id, current_user)
+        filename = f'chemoguard_report_{prediction_id}.pdf'
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/share/qr/<int:prediction_id>', methods=['GET'])
+@login_required
+def get_qr_code(prediction_id):
+    """Generate QR code for sharing prediction."""
+    from export import generate_qr_code
+    
+    try:
+        base_url = request.host_url.rstrip('/')
+        qr_buffer = generate_qr_code(prediction_id, base_url)
+        return send_file(
+            qr_buffer,
+            mimetype='image/png',
+            as_attachment=False
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/')
+def index():
+    """Render the main page."""
+    return render_template('index.html')
 
 
 @app.route('/health')
@@ -330,7 +371,17 @@ def reload_models():
         }), 500
 
 
+# Make predict_risk available to routes module
+import sys
+sys.modules['app'] = sys.modules[__name__]
+
+
 if __name__ == '__main__':
+    # Create database tables
+    with app.app_context():
+        db.create_all()
+        print("Database tables created/verified.")
+    
     # Load models on startup
     try:
         load_models()
@@ -344,5 +395,4 @@ if __name__ == '__main__':
         print("Server will NOT start without models loaded.")
         import sys
         sys.exit(1)
-
 

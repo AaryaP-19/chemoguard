@@ -23,7 +23,7 @@ task:
 
 | Task | RF(100) | Tree(depth 3) | Majority baseline |
 |---|---|---|---|
-| Anemia (as trained) | 100.00% | 100.00% | 69.38% |
+| Anemia (score/flags included, audit variant) | 100.00% | 100.00% | 69.38% |
 | Anemia (score/flags dropped) | 99.72% | 99.93% | 69.38% |
 | Neutropenia | 100.00% | 99.93% | 92.29% |
 | Thrombocytopenia | 100.00% | 100.00% | 90.90% |
@@ -34,13 +34,38 @@ The anemia model never uses `Hb`: High-risk rows average Hb 11.82 and reach
 24.8 (polycythaemia), while Low-risk rows include Hb 5.1 (transfusion
 threshold).
 
-**Open question — resolve before the rebuild.** It is not yet settled whether
-`anemia_score` and the `*_flag` columns are passed to `.fit()` as features.
-The "as trained" vs "score/flags dropped" split in the table implies they
-were. Check what `train_risk_prediction_models.py` actually passes for each
-of the three models and record the answer here. "Model learns the rule from
-its inputs" and "model is handed the answer as a feature" are different
-defects.
+**Resolved 2026-09-21 — the score and flag columns never reach `.fit()`.**
+The feature matrices are hardcoded column selections:
+
+| Model | Line | Features passed to `.fit()` |
+|---|---|---|
+| Anemia | `train_risk_prediction_models.py:53` | `['RBC', 'WBC', 'PLATELETS']` |
+| Neutropenia | `train_risk_prediction_models.py:76` | `['RBC', 'WBC', 'PLATELETS', 'ANC']` |
+| Thrombocytopenia | `train_risk_prediction_models.py:104` | `['RBC', 'WBC', 'PLATELETS']` |
+
+Nothing else reaches the estimator. Each `X` is `df[features].copy()`, and the
+one `.fit()` in the file (`train_risk_prediction_models.py:206`) is called with
+that matrix — standardised for Logistic Regression, raw for the tree models.
+`anemia_score`, `RBC_flag`, `WBC_flag` and `PLT_flag` are present as columns in
+the CSVs but are never selected.
+
+So this is **"model learns the rule from its inputs"**, not "model is handed
+the answer as a feature" — the less egregious of the two defects. It does not
+soften Finding 1. Every label is a deterministic threshold function of columns
+that sit in its own feature matrix:
+
+- `anemia_risk` thresholds RBC, WBC and PLATELETS — exactly the three features
+- `neutropenia_risk` thresholds ANC — a feature
+- `thrombocytopenia_risk` thresholds PLATELETS — a feature
+
+100.00% is arithmetic, not learning.
+
+**Table note.** The row now reading "Anemia (score/flags included, audit
+variant)" was originally labelled "as trained". It does not describe this
+script. It came from an audit run that deliberately trained a variant with
+the score and flag columns added, in order to separate the two defects.
+Relabelled 2026-09-21 so the table is not read as describing the repo's
+actual training path; the numbers are unchanged.
 
 ## Finding 2 — roughly half the dataset is synthetic
 
@@ -214,6 +239,53 @@ before quoting either number.** Caveat: HCT≈3×Hb is a clinical rule of thumb,
 not an exact identity, so a 5% bound on it is strict and drags the joint count
 down.
 
+## Finding 7 — unit conventions inferred at fit time, never persisted
+
+`train_risk_prediction_models.py` decides its unit convention by inspecting
+whatever data it is handed, at three sites:
+
+- `train_risk_prediction_models.py:59-66` — anemia: PLATELETS, WBC
+- `train_risk_prediction_models.py:82-93` — neutropenia: WBC, PLATELETS, ANC
+- `train_risk_prediction_models.py:109-115` — thrombocytopenia: WBC, PLATELETS
+
+Each is the same shape:
+
+```python
+if anemia_X['PLATELETS'].mean() > 1000:
+    anemia_X['PLATELETS'] = anemia_X['PLATELETS'] / 1000
+```
+
+**This is not a train/label mismatch.** Scaling a feature by a constant leaves
+label consistency intact — the tree learns the boundary at 1.5 instead of
+1500. Training is internally coherent and the reported accuracies are
+unaffected by it.
+
+**The defect is that the transformation is data-dependent and unrecorded.**
+Whether the division happens is a property of the training set's composition,
+not of the column's units. Retrain on a mostly-neutropenic cohort — precisely
+the population this tool is aimed at — and the mean falls below the threshold,
+no division occurs, and the model learns its boundary at 1500 instead of 1.5.
+The artefact is then persisted with no record of which scale it expects:
+`save_models()` writes the estimator, the encoder, and a metadata file listing
+feature *names* only (`train_risk_prediction_models.py:293`). The scale is
+nowhere in the saved state.
+
+Inference then applies whatever convention it applies. When the two disagree
+the predictions are wrong by 1000× at the decision boundary, no exception is
+raised, and nothing downstream can detect it. Same root cause as Finding 4 —
+magnitude taken as evidence of unit — but on the training side, where it is
+frozen into a persisted artefact instead of recomputed per request.
+
+For the rebuild:
+
+- The unit convention is part of the model contract. Declare it, do not infer
+  it, and persist it with the estimator.
+- Retraining on a different cohort must not be able to silently change what a
+  persisted model expects.
+- This is why the explicit-unit boundary in Direction comes *before* NHANES
+  ingestion: the loader has to be written against declared units, or this
+  same failure re-enters through the new data path.
+
 ---
 
 ## Direction
@@ -257,19 +329,58 @@ against an explicit-unit boundary rather than retrofitted afterwards.
 - `train_risk_prediction_models.py:43-45` reads three CSVs that are now
   quarantined (Finding 5), so the script raises `FileNotFoundError`.
   Expected — it gets rewritten against NHANES, not patched.
-- `app.py:338` and `app_new.py:391` — `debug=True, host='0.0.0.0'`. The
-  Werkzeug console is remote code execution on all interfaces.
-- `routes.py:23-24` — `/upload` is unauthenticated, with a `user_id = 0`
-  fallback at `routes.py:42`. It then calls `current_user.id` at
-  `routes.py:74`, so an anonymous request **writes the file to disk and then
-  errors**, leaving an orphaned upload. Unauthenticated arbitrary file write
-  with no cleanup.
+- `app.py:391` — `debug=True, host='0.0.0.0'`. The Werkzeug console is remote
+  code execution on all interfaces. **Line reference corrected 2026-09-21:**
+  this entry previously read "`app.py:338` and `app_new.py:391`", as though
+  both files were live. They were not. The old `app.py` had a `SyntaxError`
+  at line 44 (a bare `elif` with an empty body) and could not be imported or
+  run at all; `app_new.py` was the only working entry point, despite being
+  the one with the provisional name. `start_app.bat`, `start_app.sh` and
+  `FLASK_APP_README.md` all pointed at the dead file. Recorded because the
+  misdirection cost real time: every instruction written against this repo
+  assumed `app.py` was the application. The dead file has been deleted and
+  `app_new.py` renamed to `app.py`; line 391 is the post-rename location.
+- `routes.py:23` — **`/upload` has two independent defects on one route.**
+  1. *No auth check.* The route is undecorated. `routes.py:42` has a
+     `user_id = current_user.id if current_user.is_authenticated else 0`
+     fallback and the file is written at `routes.py:49` before any identity
+     is established. Note the earlier description of this entry was wrong:
+     `current_user.id` at `routes.py:74` sits inside
+     `if current_user.is_authenticated:` (line 71), so an anonymous request
+     does **not** error. It writes the file, runs a **billable OpenAI call**
+     (`routes.py:57`), skips the DB block, and returns 200 with the extracted
+     values. Only the error path cleans up (60-64), so the file stays on disk
+     forever. It is a fully functional unauthenticated endpoint granting
+     arbitrary file write plus free use of the OpenAI key — worse than
+     "writes then errors", not milder.
+  2. *No CSRF protection.* `/upload` takes `multipart/form-data`, which is a
+     CORS-simple content type and triggers no preflight. An attacker page can
+     make a logged-in victim's browser upload an attacker-chosen file:
+     writing to disk, burning the OpenAI key, and creating a `MedicalReport`
+     row under the victim's `user_id`.
+
+  The two are independent. Adding `@login_required` does not fix the CSRF
+  exposure, and adding CSRF does not fix the missing auth.
+- `routes.py:147` — `/predict` is also unauthenticated. `app.py:357` —
+  `/reload_models` is an unauthenticated POST.
 - Flask-WTF is in `requirements.txt` with no CSRF import anywhere.
+- **Incidental CSRF protection — preserve deliberately, do not rely on it.**
+  Four of the six mutating endpoints (`/api/auth/register`, `/api/auth/login`,
+  `PUT /api/auth/profile`, `/api/predict`) resist CSRF today only as a side
+  effect: they parse with a bare `request.get_json()` — no `force=True`, no
+  `silent=True`, and no `request.form` fallback anywhere in the codebase — so
+  Flask returns 415 on any non-JSON content type, which forces a preflight
+  that a cross-origin form cannot satisfy. Nobody chose this. It disappears
+  the moment someone adds `force=True`, a `request.form` fallback, or
+  permissive CORS. The other two are exposed: `/api/upload` (multipart) and
+  `/api/auth/logout` (parses no body at all).
 - Pickled models unloadable on newer sklearn
   (`ModuleNotFoundError: sklearn.ensemble._gb_losses`).
 - Dead scaler code path — no scaler files were ever written.
-- Duplicate files: `app.py`/`app_new.py`, `script.js`/`script_new.js`,
-  `style.css`/`style_new.css`, `index.html`/`index_new.html`.
+- Missing models are handled two different ways: `initialize_models()` at
+  `app.py:86` warns and continues on import, but the `__main__` block calls
+  `load_models()` and `sys.exit(1)` on failure. So `flask run` starts without
+  models and `python app.py` does not.
 
 ## Environment
 

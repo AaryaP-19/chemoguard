@@ -115,7 +115,15 @@ The application accepts values in different units and automatically converts the
 
 ```
 .
-├── app.py                 # Flask application
+├── app.py                 # Flask application and entry point
+├── auth.py                # Authentication blueprint (/api/auth)
+├── routes.py              # Upload / predict / reports blueprint (/api)
+├── config.py              # Configuration
+├── database.py            # SQLAlchemy models
+├── gpt_extraction.py      # GPT-4o-mini extraction backend
+├── ocr_extraction.py      # Tesseract extraction backend
+├── export.py              # PDF export and QR codes
+├── init_db.py             # Database initialisation
 ├── templates/
 │   └── index.html         # Frontend HTML
 ├── static/

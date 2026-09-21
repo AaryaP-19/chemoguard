@@ -3,7 +3,7 @@ Database initialization script for ChemoGuard.
 Run this script to create all database tables.
 """
 
-from app_new import app, db
+from app import app, db
 from database import User, MedicalReport, Prediction, PredictionHistory
 
 def init_db():

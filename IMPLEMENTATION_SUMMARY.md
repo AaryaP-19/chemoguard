@@ -66,8 +66,7 @@ All project requirements have been implemented. The ChemoGuard application now i
 
 ```
 Chemo-guard/
-├── app.py                  # Original app (backward compatible)
-├── app_new.py             # Enhanced app with all features
+├── app.py                 # Flask application (auth, upload, predict, export)
 ├── database.py            # Database models
 ├── config.py              # Configuration settings
 ├── auth.py                # Authentication routes
@@ -157,8 +156,7 @@ See `SETUP_GUIDE.md` for detailed testing instructions and curl examples.
 
 ## Notes
 
-- The original `app.py` is maintained for backward compatibility
-- New features are in `app_new.py`
+- `app.py` is the single application entry point
 - All database operations use SQLAlchemy ORM
 - File uploads are stored in `uploads/` directory
 - OCR requires Tesseract to be installed
