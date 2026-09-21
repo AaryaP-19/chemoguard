@@ -901,3 +901,51 @@ body::before {
     }
 }
 
+
+/* Unit selector beside a value input.
+   Every count is entered as a number plus the unit it was printed in; the
+   two are laid out as one control so they read as a single quantity. */
+.value-with-unit {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.value-with-unit input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.unit-select {
+    flex: 0 0 auto;
+    padding: 12px 8px;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    background: #fff;
+    color: #2c3e50;
+    cursor: pointer;
+}
+
+.unit-select:focus {
+    outline: none;
+    border-color: #3498db;
+}
+
+.unit-select:disabled,
+.unit-select option:only-child {
+    color: #7f8c8d;
+}
+
+/* An extracted value the unit could not be read for. Shown, not dropped. */
+.extracted-item-unusable {
+    border-left: 4px solid #f39c12;
+    background: #fff8e8;
+}
+
+.extracted-item .canonical {
+    display: block;
+    color: #7f8c8d;
+    font-size: 0.82rem;
+    margin-top: 2px;
+}

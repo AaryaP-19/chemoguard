@@ -12,7 +12,13 @@ from io import BytesIO
 import qrcode
 from PIL import Image as PILImage
 from flask import current_app
-from database import Prediction, User
+from cbc import ANALYTES
+from database import (
+    PREDICTION_INPUT_ANALYTES,
+    Prediction,
+    User,
+    panel_from_columns,
+)
 from datetime import datetime
 
 
@@ -75,18 +81,34 @@ def generate_pdf_report(prediction_id: int, user: User) -> BytesIO:
         
         # Input Values
         elements.append(Paragraph("Input Blood Parameters", heading_style))
-        input_data = [
-            ['Parameter', 'Value', 'Unit'],
-            ['Red Blood Cells (RBC)', f"{prediction.input_rbc:.2f}", "million/μL"],
-            ['White Blood Cells (WBC)', f"{prediction.input_wbc:.2f}", "thousand/μL"],
-            ['Platelets', f"{prediction.input_platelets:.2f}", "thousand/μL"],
-        ]
-        if prediction.input_anc:
-            input_data.append(['Absolute Neutrophil Count (ANC)', f"{prediction.input_anc:.2f}", "thousand/μL"])
-        if prediction.input_neutrophils_percent:
-            input_data.append(['Neutrophils Percentage', f"{prediction.input_neutrophils_percent:.1f}", "%"])
-        
-        input_table = Table(input_data, colWidths=[2.5*inch, 2*inch, 1.5*inch])
+        # Units are read from the stored quantities, never asserted. This
+        # table used to hardcode "thousand/μL" beside whatever float was in
+        # the column, so a report recorded in cells/μL printed as
+        # "85000.00 thousand/μL" -- a fabricated unit, on the page a
+        # clinician actually reads.
+        panel = panel_from_columns(
+            prediction, PREDICTION_INPUT_ANALYTES, prefix='input_'
+        )
+        as_reported = prediction.input_reported_quantities or {}
+
+        input_data = [['Parameter', 'Value', 'Unit', 'As reported']]
+        for key in PREDICTION_INPUT_ANALYTES:
+            quantity = panel.get(key)
+            if quantity is None:
+                continue
+            original = as_reported.get(key) or {}
+            original_text = (
+                f"{original['value']:g} {original['unit']}"
+                if original.get('unit') is not None else '--'
+            )
+            input_data.append([
+                ANALYTES[key].label,
+                f"{quantity.value:,.2f}".rstrip('0').rstrip('.'),
+                quantity.unit.display,
+                original_text,
+            ])
+
+        input_table = Table(input_data, colWidths=[2.1*inch, 1.4*inch, 1.3*inch, 1.4*inch])
         input_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3498db')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),

@@ -89,40 +89,66 @@
             <div class="form-container">
                 <form id="predictionForm">
                     <div class="form-grid">
+                        <!--
+                          Each count carries its own unit selector. WBC and
+                          platelets used to be labelled "cells/μL or
+                          thousands/μL" and the form never asked which, so the
+                          server guessed from the size of the number. Copy the
+                          unit from the report; do not convert it yourself.
+                        -->
                         <div class="form-group">
                             <label for="rbc">
                                 <strong>RBC (Red Blood Cells)</strong>
-                                <span class="unit">millions/μL</span>
                             </label>
-                            <input type="number" id="rbc" step="0.01" min="0" required placeholder="e.g., 4.5" value="4.5">
+                            <div class="value-with-unit">
+                                <input type="number" id="rbc" step="0.01" min="0" required placeholder="e.g., 4.5" value="4.5">
+                                <select id="rbc_unit" class="unit-select" aria-label="RBC unit">
+                                    <option value="million/uL">millions/μL</option>
+                                </select>
+                            </div>
                             <small>Normal range: 4.0 - 6.0 millions/μL</small>
                         </div>
 
                         <div class="form-group">
                             <label for="wbc">
                                 <strong>WBC (White Blood Cells)</strong>
-                                <span class="unit">cells/μL or thousands/μL</span>
                             </label>
-                            <input type="number" id="wbc" step="0.1" min="0" required placeholder="e.g., 8.0" value="8.0">
-                            <small>Normal range: 4,000 - 11,000 cells/μL</small>
+                            <div class="value-with-unit">
+                                <input type="number" id="wbc" step="0.1" min="0" required placeholder="e.g., 8000" value="8000">
+                                <select id="wbc_unit" class="unit-select" aria-label="WBC unit">
+                                    <option value="cells/uL">cells/μL</option>
+                                    <option value="thousand/uL">thousands/μL (K/μL)</option>
+                                </select>
+                            </div>
+                            <small>Normal range: 4,000 - 11,000 cells/μL (4.0 - 11.0 K/μL)</small>
                         </div>
 
                         <div class="form-group">
                             <label for="platelets">
                                 <strong>Platelets</strong>
-                                <span class="unit">cells/μL or thousands/μL</span>
                             </label>
-                            <input type="number" id="platelets" step="0.1" min="0" required placeholder="e.g., 250" value="250">
-                            <small>Normal range: 150,000 - 450,000 cells/μL</small>
+                            <div class="value-with-unit">
+                                <input type="number" id="platelets" step="0.1" min="0" required placeholder="e.g., 250000" value="250000">
+                                <select id="platelets_unit" class="unit-select" aria-label="Platelets unit">
+                                    <option value="cells/uL">cells/μL</option>
+                                    <option value="thousand/uL">thousands/μL (K/μL)</option>
+                                </select>
+                            </div>
+                            <small>Normal range: 150,000 - 450,000 cells/μL (150 - 450 K/μL)</small>
                         </div>
 
                         <div class="form-group">
                             <label for="anc">
                                 <strong>ANC (Absolute Neutrophil Count)</strong>
-                                <span class="unit">cells/μL</span>
                                 <span class="optional">(Optional)</span>
                             </label>
-                            <input type="number" id="anc" step="0.1" min="0" placeholder="e.g., 5.0">
+                            <div class="value-with-unit">
+                                <input type="number" id="anc" step="0.1" min="0" placeholder="e.g., 5000">
+                                <select id="anc_unit" class="unit-select" aria-label="ANC unit">
+                                    <option value="cells/uL">cells/μL</option>
+                                    <option value="thousand/uL">thousands/μL (K/μL)</option>
+                                </select>
+                            </div>
                             <small>Required for neutropenia prediction</small>
                         </div>
 

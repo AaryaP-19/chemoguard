@@ -5,11 +5,25 @@ Main routes for ChemoGuard application including file upload, prediction, and re
 from flask import Blueprint, request, jsonify, send_file, current_app
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
-from database import db, MedicalReport, Prediction, PredictionHistory
+from cbc import ANALYTES, panel_from_mapping
+from database import (
+    db,
+    MedicalReport,
+    Prediction,
+    PredictionHistory,
+    PREDICTION_INPUT_ANALYTES,
+    REPORT_ANALYTES,
+    model_feature_units,
+    panel_from_columns,
+    prediction_input_columns,
+    report_columns,
+    reported_quantities,
+)
 from gpt_extraction import GPTExtractor
 from datetime import datetime
 import os
 import json
+import prediction_log
 
 routes_bp = Blueprint('routes', __name__)
 
@@ -52,10 +66,13 @@ def upload_file():
         # Get file type
         file_type = filename.rsplit('.', 1)[1].lower()
         
-        # Extract parameters using GPT-4o-mini
+        # Extract parameters using GPT-4o-mini. The extractor returns a
+        # CBCPanel: every value it found carries the unit string printed on
+        # the report. A value whose unit could not be read is not returned
+        # at all, rather than returned as a bare number.
         try:
             extractor = GPTExtractor()
-            parameters, confidence = extractor.process_file(file_path, file_type)
+            panel, confidence, skipped = extractor.process_file(file_path, file_type)
         except Exception as e:
             # Clean up file on error
             if os.path.exists(file_path):
@@ -79,34 +96,33 @@ def upload_file():
             db.session.add(report)
             db.session.flush()
             report_id = report.id
-            
-            # Update report with extracted values
-            report.hb = parameters.get('hb')
-            report.rbc = parameters.get('rbc')
-            report.wbc = parameters.get('wbc')
-            report.anc = parameters.get('anc')
-            report.platelets = parameters.get('platelets')
-            report.neutrophils_percent = parameters.get('neutrophils_percent')
-            report.hematocrit = parameters.get('hematocrit')
-            report.mcv = parameters.get('mcv')
-            report.mch = parameters.get('mch')
-            report.mchc = parameters.get('mchc')
+
+            # Canonical values into the unit-named columns, and the report's
+            # own wording into reported_quantities alongside them.
+            for column, value in report_columns(panel).items():
+                setattr(report, column, value)
+            report.reported_quantities = reported_quantities(panel)
             report.ocr_extracted = True
             report.ocr_confidence = confidence
             report.extraction_date = datetime.utcnow()
             report.raw_ocr_text = f"GPT-4o-mini extraction confidence: {confidence:.1f}%"
-            
+
             db.session.commit()
         except Exception as db_error:
             db.session.rollback()
             # Continue even if DB save fails
             print(f"Warning: Could not save to database: {db_error}")
-        
+
         return jsonify({
             'success': True,
             'message': 'File processed successfully',
             'report_id': report_id,
-            'extracted_parameters': {k: v for k, v in parameters.items() if v is not None},
+            'extracted_parameters': panel.as_dict(),
+            # Values the extractor found but could not attach a unit to.
+            # Reported rather than silently dropped: the operator needs to
+            # know the report was read and the unit was not, so they can
+            # supply it deliberately.
+            'unusable_without_units': skipped,
             'confidence': confidence
         }), 200
     
@@ -130,11 +146,11 @@ def get_reports():
                 'filename': r.filename,
                 'file_type': r.file_type,
                 'upload_date': r.upload_date.isoformat() if r.upload_date else None,
-                'rbc': r.rbc,
-                'wbc': r.wbc,
-                'platelets': r.platelets,
-                'anc': r.anc,
-                'hb': r.hb,
+                # Values leave with their units attached, same as they
+                # arrived. A consumer of this endpoint never has to know a
+                # convention to read a number.
+                'values': panel_from_columns(r, REPORT_ANALYTES).as_dict(),
+                'as_reported': r.reported_quantities,
                 'ocr_extracted': r.ocr_extracted,
                 'ocr_confidence': r.ocr_confidence
             } for r in reports]
@@ -146,115 +162,116 @@ def get_reports():
 
 @routes_bp.route('/predict', methods=['POST'])
 def predict():
-    """Enhanced predict endpoint with database storage (works with or without auth)."""
+    """Predict endpoint with database storage (works with or without auth).
+
+    Every CBC value must arrive with a unit -- see cbc.panel_from_mapping for
+    the three accepted shapes. A bare number returns 422 and is logged as a
+    refusal; it is never interpreted.
+    """
+    request_id = prediction_log.new_prediction_id()
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({'error': 'No JSON data provided'}), 400
+
+    report_id = data.get('report_id')  # Optional: link to uploaded report
+    user_id = current_user.id if current_user.is_authenticated else None
+
+    # Deferred import: the application module imports this blueprint at
+    # load time, so importing it at module scope would be circular.
+    from app import combine_severity, predict_risk, prediction_error_response
+
     try:
-        data = request.get_json()
-        
-        # Extract input values
-        rbc = float(data.get('rbc', 0))
-        wbc = float(data.get('wbc', 0))
-        platelets = float(data.get('platelets', 0))
-        anc = data.get('anc')
-        anc = float(anc) if anc else None
-        neutrophils_percent = data.get('neutrophils_percent')
-        neutrophils_percent = float(neutrophils_percent) if neutrophils_percent else None
-        report_id = data.get('report_id')  # Optional: link to uploaded report
-        
-        # Validate required inputs
-        if not all([rbc, wbc, platelets]):
+        panel = panel_from_mapping(data)
+
+        missing = panel.missing_required()
+        if missing:
             return jsonify({
-                'error': 'RBC, WBC, and Platelets are required'
+                'error': 'RBC, WBC, and Platelets are required',
+                'missing': missing,
+                'request_id': request_id,
             }), 400
-        
-        # Deferred import: the application module imports this blueprint at
-        # load time, so importing it at module scope would be circular.
-        from app import predict_risk
-        
-        predictions = predict_risk(rbc, wbc, platelets, anc, neutrophils_percent)
-        
-        # Calculate combined severity/toxicity
-        risk_scores = {'Low': 1, 'Medium': 2, 'High': 3}
-        anemia_score = risk_scores.get(predictions['anemia']['risk'], 1)
-        neutropenia_score = risk_scores.get(predictions.get('neutropenia', {}).get('risk', 'Low'), 1)
-        thrombocytopenia_score = risk_scores.get(predictions['thrombocytopenia']['risk'], 1)
-        
-        max_score = max(anemia_score, neutropenia_score, thrombocytopenia_score)
-        combined_severity = {1: 'Low', 2: 'Moderate', 3: 'High'}[max_score]
-        
-        # Store prediction in database only if user is authenticated
-        prediction_id = None
-        if current_user.is_authenticated:
-            try:
-                prediction = Prediction(
-                    user_id=current_user.id,
-                    report_id=report_id if report_id else None,
-                    input_rbc=rbc,
-                    input_wbc=wbc,
-                    input_platelets=platelets,
-                    input_anc=anc,
-                    input_neutrophils_percent=neutrophils_percent,
-                    anemia_risk=predictions['anemia']['risk'],
-                    anemia_probability_low=predictions['anemia']['probabilities'].get('Low') if predictions['anemia']['probabilities'] else None,
-                    anemia_probability_medium=predictions['anemia']['probabilities'].get('Medium') if predictions['anemia']['probabilities'] else None,
-                    anemia_probability_high=predictions['anemia']['probabilities'].get('High') if predictions['anemia']['probabilities'] else None,
-                    neutropenia_risk=predictions.get('neutropenia', {}).get('risk', 'N/A'),
-                    neutropenia_probability_low=predictions.get('neutropenia', {}).get('probabilities', {}).get('Low') if predictions.get('neutropenia', {}).get('probabilities') else None,
-                    neutropenia_probability_medium=predictions.get('neutropenia', {}).get('probabilities', {}).get('Medium') if predictions.get('neutropenia', {}).get('probabilities') else None,
-                    neutropenia_probability_high=predictions.get('neutropenia', {}).get('probabilities', {}).get('High') if predictions.get('neutropenia', {}).get('probabilities') else None,
-                    thrombocytopenia_risk=predictions['thrombocytopenia']['risk'],
-                    thrombocytopenia_probability_low=predictions['thrombocytopenia']['probabilities'].get('Low') if predictions['thrombocytopenia']['probabilities'] else None,
-                    thrombocytopenia_probability_medium=predictions['thrombocytopenia']['probabilities'].get('Medium') if predictions['thrombocytopenia']['probabilities'] else None,
-                    thrombocytopenia_probability_high=predictions['thrombocytopenia']['probabilities'].get('High') if predictions['thrombocytopenia']['probabilities'] else None,
-                    combined_severity=combined_severity,
-                    combined_score=max_score
-                )
-                
-                db.session.add(prediction)
-                db.session.flush()
-                prediction_id = prediction.id
-                
-                # Create history entry
-                history = PredictionHistory(
-                    prediction_id=prediction.id,
-                    user_id=current_user.id,
-                    version=1,
-                    prediction_data=json.dumps({
-                        'predictions': predictions,
-                        'input_values': {
-                            'rbc': rbc,
-                            'wbc': wbc,
-                            'platelets': platelets,
-                            'anc': anc,
-                            'neutrophils_percent': neutrophils_percent
-                        }
-                    })
-                )
-                db.session.add(history)
-                db.session.commit()
-            except Exception as db_error:
-                db.session.rollback()
-                print(f"Warning: Could not save prediction to database: {db_error}")
-        
-        return jsonify({
-            'success': True,
-            'prediction_id': prediction_id,
-            'predictions': predictions,
-            'combined_severity': combined_severity,
-            'combined_toxicity': combined_severity,  # Alias for clarity
-            'input_values': {
-                'rbc': rbc,
-                'wbc': wbc,
-                'platelets': platelets,
-                'anc': anc,
-                'neutrophils_percent': neutrophils_percent
-            }
-        }), 200
-    
-    except Exception as e:
+
+        predictions, flags, _ = predict_risk(
+            panel, request_id=request_id, user_id=user_id, report_id=report_id
+        )
+    except Exception as exc:
+        handled = prediction_error_response(exc, request_id, data, user_id=user_id)
+        if handled is not None:
+            return handled
         db.session.rollback()
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return jsonify({'error': str(exc), 'request_id': request_id}), 500
+
+    combined = combine_severity(predictions)
+    combined_severity = combined['severity']
+    max_score = combined['score']
+
+    def probability(model, level):
+        body = predictions.get(model) or {}
+        return (body.get('probabilities') or {}).get(level)
+
+    # Store prediction in database only if user is authenticated
+    prediction_id = None
+    if current_user.is_authenticated:
+        try:
+            prediction = Prediction(
+                user_id=current_user.id,
+                report_id=report_id if report_id else None,
+                request_id=request_id,
+                # Canonical values, in columns named for the unit they hold,
+                # plus the as-recorded originals and the units each estimator
+                # was actually fed.
+                **prediction_input_columns(panel),
+                input_reported_quantities=reported_quantities(panel),
+                model_feature_units=model_feature_units(predictions),
+                anemia_risk=predictions['anemia']['risk'],
+                anemia_probability_low=probability('anemia', 'Low'),
+                anemia_probability_medium=probability('anemia', 'Medium'),
+                anemia_probability_high=probability('anemia', 'High'),
+                neutropenia_risk=predictions.get('neutropenia', {}).get('risk'),
+                neutropenia_probability_low=probability('neutropenia', 'Low'),
+                neutropenia_probability_medium=probability('neutropenia', 'Medium'),
+                neutropenia_probability_high=probability('neutropenia', 'High'),
+                thrombocytopenia_risk=predictions['thrombocytopenia']['risk'],
+                thrombocytopenia_probability_low=probability('thrombocytopenia', 'Low'),
+                thrombocytopenia_probability_medium=probability('thrombocytopenia', 'Medium'),
+                thrombocytopenia_probability_high=probability('thrombocytopenia', 'High'),
+                combined_severity=combined_severity,
+                combined_score=max_score
+            )
+
+            db.session.add(prediction)
+            db.session.flush()
+            prediction_id = prediction.id
+
+            # Create history entry
+            history = PredictionHistory(
+                prediction_id=prediction.id,
+                user_id=current_user.id,
+                version=1,
+                prediction_data=json.dumps({
+                    'predictions': predictions,
+                    'input_values': panel.as_dict(),
+                    'flags': [f.as_dict() for f in flags],
+                    'request_id': request_id,
+                })
+            )
+            db.session.add(history)
+            db.session.commit()
+        except Exception as db_error:
+            db.session.rollback()
+            print(f"Warning: Could not save prediction to database: {db_error}")
+
+    return jsonify({
+        'success': True,
+        'request_id': request_id,
+        'prediction_id': prediction_id,
+        'predictions': predictions,
+        'combined_severity': combined_severity,
+        'combined_toxicity': combined_severity,  # Alias for clarity
+        'combined': combined,
+        'flags': [f.as_dict() for f in flags],
+        'input_values': panel.as_dict(),
+    }), 200
 
 
 @routes_bp.route('/predictions', methods=['GET'])
@@ -274,9 +291,9 @@ def get_predictions():
                 'neutropenia_risk': p.neutropenia_risk,
                 'thrombocytopenia_risk': p.thrombocytopenia_risk,
                 'combined_severity': p.combined_severity,
-                'input_rbc': p.input_rbc,
-                'input_wbc': p.input_wbc,
-                'input_platelets': p.input_platelets,
+                'input_values': panel_from_columns(
+                    p, PREDICTION_INPUT_ANALYTES, prefix='input_'
+                ).as_dict(),
                 'report_id': p.report_id
             } for p in predictions]
         }), 200
@@ -326,13 +343,12 @@ def get_prediction(prediction_id):
                 },
                 'combined_severity': prediction.combined_severity,
                 'combined_score': prediction.combined_score,
-                'input_values': {
-                    'rbc': prediction.input_rbc,
-                    'wbc': prediction.input_wbc,
-                    'platelets': prediction.input_platelets,
-                    'anc': prediction.input_anc,
-                    'neutrophils_percent': prediction.input_neutrophils_percent
-                },
+                'input_values': panel_from_columns(
+                    prediction, PREDICTION_INPUT_ANALYTES, prefix='input_'
+                ).as_dict(),
+                'input_as_reported': prediction.input_reported_quantities,
+                'model_feature_units': prediction.model_feature_units,
+                'request_id': prediction.request_id,
                 'report_id': prediction.report_id
             }
         }), 200

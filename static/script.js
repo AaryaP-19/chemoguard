@@ -9,6 +9,7 @@ function csrfToken() {
 let currentUser = null;
 let currentPredictionId = null;
 let extractedData = null;
+let unusableWithoutUnits = {};
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', function() {
@@ -242,18 +243,38 @@ async function logout() {
 
 // Trigger prediction (can be called manually or from form submit)
 // Make it globally accessible to avoid scope issues
+// Read a value together with the unit selected beside it.
+// Returns null when the field is blank, so an optional analyte can be
+// omitted -- but never a number without the unit that goes with it.
+function readQuantity(id, fixedUnit) {
+    const input = document.getElementById(id);
+    if (!input || input.value === '') return null;
+
+    const value = parseFloat(input.value);
+    if (isNaN(value)) return null;
+
+    const select = document.getElementById(id + '_unit');
+    const unit = fixedUnit || (select ? select.value : null);
+    if (!unit) return null;
+
+    return { value: value, unit: unit };
+}
+
 window.triggerPrediction = async function triggerPrediction() {
-    const rbc = parseFloat(document.getElementById('rbc').value);
-    const wbc = parseFloat(document.getElementById('wbc').value);
-    const platelets = parseFloat(document.getElementById('platelets').value);
-    const anc = document.getElementById('anc').value ? parseFloat(document.getElementById('anc').value) : null;
-    const neutrophils_percent = document.getElementById('neutrophils_percent').value ? 
-                                 parseFloat(document.getElementById('neutrophils_percent').value) : null;
+    // Each entry is {value, unit}. The server refuses a bare number with
+    // 422, so there is nothing to gain by sending one.
+    const payload = {
+        rbc: readQuantity('rbc'),
+        wbc: readQuantity('wbc'),
+        platelets: readQuantity('platelets'),
+        anc: readQuantity('anc'),
+        neutrophils_percent: readQuantity('neutrophils_percent', '%')
+    };
 
-    console.log('Triggering prediction with values:', { rbc, wbc, platelets, anc, neutrophils_percent });
+    console.log('Triggering prediction with values:', payload);
 
-    if (!rbc || !wbc || !platelets || isNaN(rbc) || isNaN(wbc) || isNaN(platelets)) {
-        showError('Please fill in all required fields (RBC, WBC, Platelets) with valid numbers');
+    if (!payload.rbc || !payload.wbc || !payload.platelets) {
+        showError('Please fill in all required fields (RBC, WBC, Platelets) with valid numbers and select a unit for each');
         return;
     }
 
@@ -278,7 +299,7 @@ window.triggerPrediction = async function triggerPrediction() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken() },
             credentials: 'include',
-            body: JSON.stringify({ rbc, wbc, platelets, anc, neutrophils_percent })
+            body: JSON.stringify(payload)
         });
 
         const data = await response.json();
@@ -431,9 +452,10 @@ async function handleFileSelect(e) {
         
         if (response.ok) {
             extractedData = data.extracted_parameters || {};
+            unusableWithoutUnits = data.unusable_without_units || {};
             console.log('Extracted data received:', extractedData);
-            console.log('RBC:', extractedData.rbc, 'WBC:', extractedData.wbc, 'Platelets:', extractedData.platelets);
-            displayExtractedData(extractedData);
+            console.log('Unusable without units:', unusableWithoutUnits);
+            displayExtractedData(extractedData, unusableWithoutUnits);
             showError(`File processed successfully! Confidence: ${data.confidence?.toFixed(1) || 'N/A'}%`, 'success');
             if (currentUser) {
                 loadReports();
@@ -453,11 +475,15 @@ async function handleFileSelect(e) {
     }
 }
 
-// Display extracted data
-function displayExtractedData(data) {
+// Display extracted data.
+// Each entry is {canonical: {value, unit}, as_reported: {value, unit},
+// unit_source}. Values are shown as the report printed them, with the
+// canonical form beside it, so the operator can check the transcription
+// against the page rather than against a converted number.
+function displayExtractedData(data, unusable) {
     const grid = document.getElementById('extractedGrid');
     grid.innerHTML = '';
-    
+
     if (!data || Object.keys(data).length === 0) {
         grid.innerHTML = '<p style="color: #7f8c8d; text-align: center; padding: 20px;">No parameters extracted. Please try again with a clearer image.</p>';
         document.getElementById('extractedData').style.display = 'block';
@@ -477,24 +503,62 @@ function displayExtractedData(data) {
         'mchc': 'MCHC'
     };
     
-    Object.entries(data).forEach(([key, value]) => {
-        if (value !== null && value !== undefined && value !== '') {
-            const item = document.createElement('div');
-            item.className = 'extracted-item';
-            const label = paramLabels[key] || key.toUpperCase();
-            item.innerHTML = `
-                <label>${label}</label>
-                <value>${value}</value>
-            `;
-            grid.appendChild(item);
-        }
+    Object.entries(data).forEach(([key, entry]) => {
+        if (!entry || !entry.as_reported) return;
+        const item = document.createElement('div');
+        item.className = 'extracted-item';
+        const label = paramLabels[key] || key.toUpperCase();
+        const reported = `${entry.as_reported.value} ${entry.as_reported.unit}`;
+        const canonical = `${entry.canonical.value} ${entry.canonical.unit}`;
+        item.innerHTML = `
+            <label>${label}</label>
+            <value>${reported}</value>
+            ${reported === canonical ? '' : `<small class="canonical">= ${canonical}</small>`}
+        `;
+        grid.appendChild(item);
     });
-    
+
+    // Rows the extractor read but could not attach a unit to. Shown rather
+    // than dropped: the operator needs to tell "not on the report" from
+    // "on the report, unit unreadable", because only the second is
+    // something they can fix by typing the unit in.
+    Object.entries(unusable || {}).forEach(([key, entry]) => {
+        const item = document.createElement('div');
+        item.className = 'extracted-item extracted-item-unusable';
+        const label = paramLabels[key] || key.toUpperCase();
+        item.innerHTML = `
+            <label>${label}</label>
+            <value>${entry.value} <em>(no unit read)</em></value>
+            <small class="canonical">Enter this value and its unit below; it will not be used until you do.</small>
+        `;
+        grid.appendChild(item);
+    });
+
     if (grid.children.length === 0) {
         grid.innerHTML = '<p style="color: #7f8c8d; text-align: center; padding: 20px;">No valid parameters found in the image.</p>';
     }
-    
+
     document.getElementById('extractedData').style.display = 'block';
+}
+
+// Copy one extracted quantity into its input and unit selector.
+// Prefers the unit the report printed; falls back to the canonical unit
+// when the selector has no option for it (e.g. a report in 10^9/L).
+function setQuantity(id, entry) {
+    const input = document.getElementById(id);
+    if (!input || !entry || !entry.canonical) return false;
+
+    const select = document.getElementById(id + '_unit');
+    const options = select ? Array.from(select.options).map(o => o.value) : [];
+    const preferred = entry.as_reported && options.includes(entry.as_reported.unit)
+        ? entry.as_reported
+        : entry.canonical;
+
+    input.value = preferred.value;
+    if (select && options.includes(preferred.unit)) {
+        select.value = preferred.unit;
+    }
+    return true;
 }
 
 // Use extracted data - make it globally accessible for onclick handler
@@ -507,54 +571,15 @@ window.useExtractedData = function() {
         return;
     }
     
-    // Get form inputs
-    const rbcInput = document.getElementById('rbc');
-    const wbcInput = document.getElementById('wbc');
-    const plateletsInput = document.getElementById('platelets');
-    const ancInput = document.getElementById('anc');
-    const neutrophilsInput = document.getElementById('neutrophils_percent');
-    
     let valuesSet = false;
-    
-    // Set RBC (check for null/undefined, but allow 0)
-    if (rbcInput && extractedData.rbc !== null && extractedData.rbc !== undefined && extractedData.rbc !== '') {
-        rbcInput.value = extractedData.rbc;
-        console.log('✓ Set RBC to:', extractedData.rbc);
-        valuesSet = true;
-    } else {
-        console.log('✗ RBC not set - value:', extractedData.rbc, 'input exists:', !!rbcInput);
-    }
-    
-    // Set WBC
-    if (wbcInput && extractedData.wbc !== null && extractedData.wbc !== undefined && extractedData.wbc !== '') {
-        wbcInput.value = extractedData.wbc;
-        console.log('✓ Set WBC to:', extractedData.wbc);
-        valuesSet = true;
-    } else {
-        console.log('✗ WBC not set - value:', extractedData.wbc, 'input exists:', !!wbcInput);
-    }
-    
-    // Set Platelets
-    if (plateletsInput && extractedData.platelets !== null && extractedData.platelets !== undefined && extractedData.platelets !== '') {
-        plateletsInput.value = extractedData.platelets;
-        console.log('✓ Set Platelets to:', extractedData.platelets);
-        valuesSet = true;
-    } else {
-        console.log('✗ Platelets not set - value:', extractedData.platelets, 'input exists:', !!plateletsInput);
-    }
-    
-    // Set ANC (optional)
-    if (ancInput && extractedData.anc !== null && extractedData.anc !== undefined && extractedData.anc !== '') {
-        ancInput.value = extractedData.anc;
-        console.log('✓ Set ANC to:', extractedData.anc);
-    }
-    
-    // Set Neutrophils % (optional)
-    if (neutrophilsInput && extractedData.neutrophils_percent !== null && extractedData.neutrophils_percent !== undefined && extractedData.neutrophils_percent !== '') {
-        neutrophilsInput.value = extractedData.neutrophils_percent;
-        console.log('✓ Set Neutrophils % to:', extractedData.neutrophils_percent);
-    }
-    
+
+    // Value and unit travel together, for every field.
+    valuesSet = setQuantity('rbc', extractedData.rbc) || valuesSet;
+    valuesSet = setQuantity('wbc', extractedData.wbc) || valuesSet;
+    valuesSet = setQuantity('platelets', extractedData.platelets) || valuesSet;
+    setQuantity('anc', extractedData.anc);
+    setQuantity('neutrophils_percent', extractedData.neutrophils_percent);
+
     if (!valuesSet) {
         showError('No valid values (RBC, WBC, Platelets) found in extracted data. Please check the extracted parameters.');
         return;

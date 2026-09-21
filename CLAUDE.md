@@ -116,6 +116,50 @@ Confirmed concretely: platelets of 900 cells/µL (profound thrombocytopenia)
 is read as 900 thousand/µL and returns **Low risk**. Both 404000 cells/µL and
 404 thousand/µL also return Low. Every error points critical → normal.
 
+**Resolved 2026-09-21 — the explicit-unit boundary.** All 18 runtime and
+training magnitude-inference sites are gone. A CBC value is now a
+`units.Quantity` — a number and a `Unit` — from extraction through to
+`.predict()`, and `Quantity.to()` is the only conversion in the codebase.
+
+- `units.py` — `Unit`, `Quantity`, the alias table, the error family.
+  Symbols are ASCII (`uL`), because unit strings reach the cp1252 console.
+- `cbc.py` — the analyte registry, one declared canonical unit each, the
+  `CBCPanel`, ANC derivation, and the three accepted request shapes.
+- `model_contract.py` — `MODEL_CONTRACTS`, the declared per-model feature
+  units, and `features_for`, the single place a Quantity becomes a float.
+- `clinical_flags.py` — CTCAE v5.0 grading over canonical values.
+- `prediction_log.py` — one JSON record per prediction *and* per refusal.
+
+Canonical units: RBC `million/uL`; WBC, ANC, platelets `cells/uL`; Hb and
+MCHC `g/dL`; HCT and neutrophil % `%`; MCV `fL`; MCH `pg`. cells/uL for the
+counts keeps 900 cells/µL and 900 thousand/µL distinguishable after
+conversion (900 against 900000) instead of collapsing them onto one float,
+which is the mechanism of this finding.
+
+**A missing unit is a refusal, not a default.** `MissingUnitError` → HTTP
+422, distinct from the 400 for an absent field. An unrecognised unit, a unit
+of the wrong dimension, and a value that is physiologically impossible once
+converted are all refused the same way. Nothing infers.
+
+Storage renamed rather than reinterpreted: `wbc` → `wbc_cells_per_ul`,
+`input_rbc` → `input_rbc_million_per_ul`, and so on, plus
+`reported_quantities` holding what the source actually said. Old rows now
+fail to load instead of reading 1000× wrong — a 1000× change without a
+rename is Finding 3 itself. See `MIGRATION_UNITS.md`; there is no automatic
+migration, because the unit of a historical row was never recorded and any
+script would have to infer it.
+
+Regression coverage in `tests/test_units.py`, `tests/test_api_units.py`,
+`tests/test_prediction_path.py` and `tests/test_report_fixtures.py`. The
+whole suite is 116 tests, 3 of which skip without the Tesseract binary. The
+load-bearing one asserts that 900 cells/µL and 900 thousand/µL return
+*different* risks through the same estimator — under magnitude inference
+they produced an identical feature value, so it could not have passed.
+
+The prediction tests install stand-in estimators implementing the threshold
+rules of Finding 1, because `models/` is empty and stays so until the NHANES
+artefacts land. They exercise the boundary, not the pickles.
+
 ## Finding 5 — provenance: the source file, and its withdrawal
 
 `Clinically Validated CBC Dataset of 7,196 Samples/BDCBC7196_Hematology_Dataset.csv`
@@ -320,6 +364,19 @@ For the rebuild:
   ingestion: the loader has to be written against declared units, or this
   same failure re-enters through the new data path.
 
+**Resolved 2026-09-21, all three points.** The seven `.mean() > 1000` sites
+are replaced by `SOURCE_UNITS` — each dataset states the unit of each of its
+columns — and `to_contract_units`, which converts to whatever
+`model_contract.MODEL_CONTRACTS` declares for that estimator. A dataset with
+no declared units raises rather than training. `save_models()` now writes the
+feature contract, units included, not just feature names, and `load_models()`
+runs `check_estimator`, refusing any artefact whose `n_features_in_`
+disagrees with its declared contract. `/health` publishes both the contracts
+and a SHA-256 of each loaded artefact, so a mismatch is visible from outside.
+
+The NHANES loader inherits this: it declares its units in `SOURCE_UNITS` or
+it does not run.
+
 ---
 
 ## Direction
@@ -327,8 +384,9 @@ For the rebuild:
 Keep the app layer — auth, DB schema, both extraction backends, PDF export,
 REST API all work. Replace the dataset and the modelling layer.
 
-**Work order: security → explicit units → NHANES ingestion → labels →
-training → extraction benchmark.**
+**Work order: ~~security~~ → ~~explicit units~~ → NHANES ingestion → labels
+→ training → extraction benchmark.** Units landed 2026-09-21; see the
+resolution notes under Findings 4 and 7.
 
 Units come before data ingestion deliberately. Finding 3 shows implicit units
 are already a source of silent corruption; the NHANES loader should be written
