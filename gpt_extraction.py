@@ -1,6 +1,14 @@
 """
 GPT-4o-mini based extraction module for extracting hematological parameters from medical reports.
 Uses OpenAI GPT-4o-mini with vision capabilities to extract values from images/PDFs.
+
+The model transcribes; it does not convert. The prompt this replaces told it
+to "convert all values to standard units ... If WBC is in cells/uL (e.g.
+8000), convert to thousands/uL (8.0)", which put a unit conversion inside a
+vision model, discarded the unit the report actually printed, and returned a
+bare number that nothing downstream could check. Now it returns the value and
+the unit string as printed, and the conversion happens in units.Quantity
+where it can be tested.
 """
 
 import base64
@@ -10,6 +18,8 @@ from typing import Dict, Optional
 from PIL import Image
 from pdf2image import convert_from_path
 import io
+
+from cbc import ANALYTES, panel_from_extraction as build_panel_from_extraction
 
 
 class GPTExtractor:
@@ -46,37 +56,49 @@ class GPTExtractor:
         except Exception as e:
             raise Exception(f"Error converting PDF to image: {str(e)}")
     
-    def extract_from_image(self, image_path: str) -> Dict[str, Optional[float]]:
-        """Extract parameters from image using GPT-4o-mini."""
+    #: Transcribe, do not convert. Every instruction that asked the model to
+    #: normalise a scale has been removed, and the unit is now a required
+    #: part of each answer.
+    PROMPT = """Analyze this medical laboratory report image and transcribe the following hematological parameters.
+Return ONLY a valid JSON object. If a parameter is not present on the report, set it to null.
+
+For each parameter, report the number and the unit EXACTLY AS PRINTED on the report:
+
+{
+    "rbc":                 {"value": <number>, "unit": "<unit as printed>"} or null,
+    "wbc":                 {"value": <number>, "unit": "<unit as printed>"} or null,
+    "platelets":           {"value": <number>, "unit": "<unit as printed>"} or null,
+    "anc":                 {"value": <number>, "unit": "<unit as printed>"} or null,
+    "neutrophils_percent": {"value": <number>, "unit": "%"} or null,
+    "hb":                  {"value": <number>, "unit": "<unit as printed>"} or null,
+    "hematocrit":          {"value": <number>, "unit": "<unit as printed>"} or null,
+    "mcv":                 {"value": <number>, "unit": "<unit as printed>"} or null,
+    "mch":                 {"value": <number>, "unit": "<unit as printed>"} or null,
+    "mchc":                {"value": <number>, "unit": "<unit as printed>"} or null
+}
+
+Critical rules:
+- DO NOT convert, rescale or normalise any value. Transcribe the digits as printed.
+  If the report says 85000, report 85000. If it says 85, report 85.
+- Copy the unit string verbatim from the report: "cells/uL", "K/uL", "10^9/L",
+  "millions/uL", "g/dL", "fL", "pg", "%" -- whatever is actually written.
+- If a value is printed but its unit is not shown anywhere for that row
+  (not in a units column, not in a header, not beside the number), set
+  "unit" to null. Do not infer the unit from how large or small the number is.
+- Do not guess a value that is not printed.
+- Return valid JSON only, no additional text."""
+
+    def extract_from_image(self, image_path: str) -> Dict[str, Optional[dict]]:
+        """Transcribe value-and-unit pairs from an image using GPT-4o-mini.
+
+        Returns the raw ``{analyte: {"value": ..., "unit": ...}}`` mapping.
+        Interpretation happens in ``process_file``; this method does no
+        conversion and no validation beyond parsing the response.
+        """
         try:
             # Encode image
             base64_image = self.encode_image(image_path)
-            
-            # Prepare prompt for JSON mode
-            prompt = """Analyze this medical laboratory report image and extract the following hematological parameters. 
-Return ONLY a valid JSON object with the extracted values. If a parameter is not found, set it to null.
 
-Required JSON format:
-{
-    "rbc": <number in millions/μL or null>,
-    "wbc": <number in cells/μL or thousands/μL or null>,
-    "platelets": <number in cells/μL or thousands/μL or null>,
-    "anc": <number in cells/μL or thousands/μL or null>,
-    "neutrophils_percent": <percentage 0-100 or null>,
-    "hb": <number in g/dL or null>,
-    "hematocrit": <percentage or null>,
-    "mcv": <number in fL or null>,
-    "mch": <number in pg or null>,
-    "mchc": <number in g/dL or null>
-}
-
-Important:
-- Convert all values to standard units (RBC: millions/μL, WBC: thousands/μL, Platelets: thousands/μL)
-- If WBC is in cells/μL (e.g., 8000), convert to thousands/μL (8.0)
-- If Platelets is in cells/μL (e.g., 250000), convert to thousands/μL (250)
-- Extract exact numeric values only
-- Return valid JSON only, no additional text"""
-            
             # Call GPT-4o-mini with vision
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -84,7 +106,7 @@ Important:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": prompt},
+                            {"type": "text", "text": self.PROMPT},
                             {
                                 "type": "image_url",
                                 "image_url": {
@@ -96,37 +118,33 @@ Important:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.1,
-                max_tokens=500
+                max_tokens=800
             )
-            
+
             # Parse JSON response
             result_text = response.choices[0].message.content
             extracted_data = json.loads(result_text)
-            
-            # Validate and convert values
-            parameters = {}
-            for key in ['rbc', 'wbc', 'platelets', 'anc', 'neutrophils_percent', 
-                       'hb', 'hematocrit', 'mcv', 'mch', 'mchc']:
-                value = extracted_data.get(key)
-                if value is not None:
-                    try:
-                        parameters[key] = float(value)
-                    except (ValueError, TypeError):
-                        parameters[key] = None
-                else:
-                    parameters[key] = None
-            
-            return parameters
-            
+
+            return {key: extracted_data.get(key) for key in ANALYTES}
+
         except json.JSONDecodeError as e:
             raise Exception(f"Invalid JSON response from GPT: {str(e)}")
         except Exception as e:
             raise Exception(f"Error extracting from image: {str(e)}")
     
-    def process_file(self, file_path: str, file_type: str) -> tuple[Dict[str, Optional[float]], float]:
-        """Process file and extract parameters."""
+    def process_file(self, file_path: str, file_type: str):
+        """Process a file and return ``(panel, confidence, skipped)``.
+
+        ``panel`` is a CBCPanel of canonicalised Quantities. ``skipped`` maps
+        analytes the model read but whose unit could not be established, so
+        the caller can show them rather than pretend they were never there.
+
+        Confidence counts only the three analytes a prediction requires, and
+        counts them only if they made it into the panel -- a value read
+        without a usable unit contributes nothing, because it cannot be used.
+        """
         temp_image_path = None
-        
+
         try:
             # Convert PDF to image if needed
             if file_type.lower() == 'pdf':
@@ -136,17 +154,16 @@ Important:
                 image_path = file_path
             else:
                 raise ValueError(f"Unsupported file type: {file_type}")
-            
-            # Extract parameters
-            parameters = self.extract_from_image(image_path)
-            
-            # Calculate confidence (simple heuristic - if we got main parameters, confidence is high)
+
+            raw = self.extract_from_image(image_path)
+            panel, skipped = build_panel_from_extraction(raw)
+
             main_params = ['rbc', 'wbc', 'platelets']
-            found_params = sum(1 for p in main_params if parameters.get(p) is not None)
-            confidence = (found_params / len(main_params)) * 100
-            
-            return parameters, confidence
-            
+            found = sum(1 for p in main_params if panel.get(p) is not None)
+            confidence = (found / len(main_params)) * 100
+
+            return panel, confidence, skipped
+
         finally:
             # Clean up temporary image file
             if temp_image_path and os.path.exists(temp_image_path):

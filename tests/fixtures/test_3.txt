@@ -1,0 +1,12 @@
+Hospital
+Complete Blood Count (CBC)
+                                  Result             Reference Range
+Hemoglobin (Hb)                   14.5 g/dL          13.5 - 17.5 g/dL
+Red Blood Cells (RBC)             4.5 millions/uL    4.2 - 5.4 millions/uL
+White Blood Cells (WBC)           6,000 cells/uL     4,300 - 10,000
+Absolute Neutrophil Count (ANC)   2,500 cells/uL     1,500 - 8,000
+Neutrophils %                     55                 40 - 65%
+Platelets                         250,000            150,000 - 450,000
+Hematocrit                        43                 39 - 50
+MCV                               90                 80 - 100
+MCH                               30                 27 - 33

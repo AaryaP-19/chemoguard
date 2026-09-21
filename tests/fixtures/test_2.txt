@@ -1,0 +1,12 @@
+LABORATORY REPORT
+HEMATOLOGY - CBC (COMPLETE BLOOD COUNT)
+RBC                4.40      millions/uL
+WBC                5800      cells/uL
+Platelets          85000     cells/uL (Low)
+ANC                3500      cells/uL
+Neutrophils %      60        %
+Hemoglobin (Hb)    13.0      g/dL
+Hematocrit (HCT)   39.0      %
+MCV                83.5      fL
+MCH                28.0      pg
+MCHC               33.2      g/dL

@@ -1,0 +1,12 @@
+HEMATOLOGY REPORT
+TEST                              RESULT   UNITS    REFERENCE RANGE
+Hemoglobin (Hb)                   14.5     g/dL     14.5 - 14.5
+Red Blood Cells (RBC)             5.1      M/uL     5.1 - 5.1
+White Blood Cells (WBC)           7.2      K/uL     7.2 - 7.2
+Absolute Neutrophil Count (ANC)   4.1      K/uL     4.1 - K.1
+Neutrophils %                     57.0     %        57 - 57
+Platelets                         250      K/uL     250 - 250
+Hematocrit                        43.5     %        43.5 - 43
+MCV                               85.3     fL       85 - 83
+MCH                               28.4     pg       28.4 - 28.4
+MCHC                              33.3     g/dL     33.3 - 33.3
