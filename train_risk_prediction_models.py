@@ -24,6 +24,9 @@ import joblib
 import os
 from datetime import datetime
 
+from model_contract import contract_for
+from units import Quantity, parse_unit
+
 # Try importing XGBoost (optional)
 try:
     import xgboost as xgb
@@ -31,6 +34,100 @@ try:
 except ImportError:
     XGBOOST_AVAILABLE = False
     print("XGBoost not available. Install with: pip install xgboost")
+
+
+# --- units -------------------------------------------------------------------
+#
+# Declared, not inferred. Each of the seven sites this replaces looked like:
+#
+#     if anemia_X['PLATELETS'].mean() > 1000:
+#         anemia_X['PLATELETS'] = anemia_X['PLATELETS'] / 1000
+#
+# Whether that division happened was a property of the training cohort, not
+# of the column. Retrain on a mostly-neutropenic cohort -- the population
+# this tool is aimed at -- and the mean falls below the threshold, no
+# division occurs, the model learns its boundary at 1500 instead of 1.5, and
+# the artefact is saved with no record of which it was. CLAUDE.md Finding 7.
+#
+# A dataset now states the unit of each of its columns, and conversion is to
+# the unit that model_contract declares for the estimator. If a new dataset
+# is added without an entry here, training stops.
+
+#: Source file -> column -> the unit that column is stored in.
+#: Established by direct comparison against the upstream file (CLAUDE.md
+#: Finding 3): all three derive from one source in cells/uL, and the anaemia
+#: CSV had WBC and PLATELETS divided by 1000 during derivation with no
+#: column rename. That is why one row of this table differs from the others.
+SOURCE_UNITS = {
+    'cbc_with_anemia_risk.csv': {
+        'RBC': 'million/uL',
+        'WBC': 'thousand/uL',
+        'PLATELETS': 'thousand/uL',
+        'ANC': 'cells/uL',
+    },
+    'cbc_with_neutropenia_risk.csv': {
+        'RBC': 'million/uL',
+        'WBC': 'cells/uL',
+        'PLATELETS': 'cells/uL',
+        'ANC': 'cells/uL',
+    },
+    'cbc_with_thrombocytopenia_risk.csv': {
+        'RBC': 'million/uL',
+        'WBC': 'cells/uL',
+        'PLATELETS': 'cells/uL',
+        'ANC': 'cells/uL',
+    },
+}
+
+#: Feature-matrix column name -> the analyte it holds.
+COLUMN_ANALYTE = {
+    'RBC': 'rbc',
+    'WBC': 'wbc',
+    'PLATELETS': 'platelets',
+    'ANC': 'anc',
+}
+
+
+def to_contract_units(frame, source_file, model):
+    """Convert a feature matrix into the units its estimator declares.
+
+    Raises rather than guessing if a column has no declared source unit: a
+    silently unconverted column is the defect, and an exception at training
+    time is far cheaper than an artefact that expects an undocumented scale.
+    """
+    contract = contract_for(model)
+    declared = SOURCE_UNITS.get(source_file)
+    if declared is None:
+        raise KeyError(
+            "No source units declared for {0!r}. Add them to SOURCE_UNITS "
+            "before training on it.".format(source_file)
+        )
+
+    converted = frame.copy()
+    for feature in contract.features:
+        column = next(
+            c for c, analyte in COLUMN_ANALYTE.items() if analyte == feature.analyte
+        )
+        if column not in converted.columns:
+            continue
+        if column not in declared:
+            raise KeyError(
+                "Column {0!r} of {1!r} has no declared unit.".format(column, source_file)
+            )
+
+        source = parse_unit(declared[column])
+        target = parse_unit(feature.unit)
+        if source is target:
+            print("  {0}: already {1}".format(column, target.symbol))
+            continue
+
+        factor = Quantity(1.0, source).magnitude_in(target)
+        converted[column] = converted[column] * factor
+        print("  {0}: {1} -> {2} (x{3:g})".format(
+            column, source.symbol, target.symbol, factor
+        ))
+
+    return converted
 
 
 def load_and_prepare_data():
@@ -54,17 +151,9 @@ def load_and_prepare_data():
     anemia_X = anemia_df[anemia_features].copy()
     anemia_y = anemia_df['anemia_risk'].copy()
     
-    # Handle unit conversion for anemia (PLATELETS might need conversion)
-    # Check if PLATELETS are in thousands or cells/uL
-    if anemia_X['PLATELETS'].mean() > 1000:
-        print("  Converting PLATELETS from cells/uL to thousands/uL")
-        anemia_X['PLATELETS'] = anemia_X['PLATELETS'] / 1000
-    
-    # Handle WBC unit conversion for anemia
-    if anemia_X['WBC'].mean() > 1000:
-        print("  Converting WBC from cells/uL to thousands/uL")
-        anemia_X['WBC'] = anemia_X['WBC'] / 1000
-    
+    # Convert to the units the anaemia contract declares.
+    anemia_X = to_contract_units(anemia_X, "cbc_with_anemia_risk.csv", "anemia")
+
     print(f"  Features: {anemia_features}")
     print(f"  Feature ranges - RBC: [{anemia_X['RBC'].min():.2f}, {anemia_X['RBC'].max():.2f}], "
           f"WBC: [{anemia_X['WBC'].min():.2f}, {anemia_X['WBC'].max():.2f}], "
@@ -77,21 +166,11 @@ def load_and_prepare_data():
     neutropenia_X = neutropenia_df[neutropenia_features].copy()
     neutropenia_y = neutropenia_df['neutropenia_risk'].copy()
     
-    # Handle unit conversion for neutropenia
-    # WBC and PLATELETS might be in cells/uL, convert to thousands for consistency
-    if neutropenia_X['WBC'].mean() > 1000:
-        print("  Converting WBC from cells/uL to thousands/uL")
-        neutropenia_X['WBC'] = neutropenia_X['WBC'] / 1000
-    
-    if neutropenia_X['PLATELETS'].mean() > 1000:
-        print("  Converting PLATELETS from cells/uL to thousands/uL")
-        neutropenia_X['PLATELETS'] = neutropenia_X['PLATELETS'] / 1000
-    
-    # ANC is already in cells/uL, convert to thousands for consistency
-    if neutropenia_X['ANC'].mean() > 1000:
-        print("  Converting ANC from cells/uL to thousands/uL")
-        neutropenia_X['ANC'] = neutropenia_X['ANC'] / 1000
-    
+    # Convert to the units the neutropenia contract declares.
+    neutropenia_X = to_contract_units(
+        neutropenia_X, "cbc_with_neutropenia_risk.csv", "neutropenia"
+    )
+
     print(f"  Features: {neutropenia_features}")
     print(f"  Feature ranges - RBC: [{neutropenia_X['RBC'].min():.2f}, {neutropenia_X['RBC'].max():.2f}], "
           f"WBC: [{neutropenia_X['WBC'].min():.2f}, {neutropenia_X['WBC'].max():.2f}], "
@@ -105,15 +184,11 @@ def load_and_prepare_data():
     thrombocytopenia_X = thrombocytopenia_df[thrombocytopenia_features].copy()
     thrombocytopenia_y = thrombocytopenia_df['thrombocytopenia_risk'].copy()
     
-    # Handle unit conversion for thrombocytopenia
-    if thrombocytopenia_X['WBC'].mean() > 1000:
-        print("  Converting WBC from cells/uL to thousands/uL")
-        thrombocytopenia_X['WBC'] = thrombocytopenia_X['WBC'] / 1000
-    
-    if thrombocytopenia_X['PLATELETS'].mean() > 1000:
-        print("  Converting PLATELETS from cells/uL to thousands/uL")
-        thrombocytopenia_X['PLATELETS'] = thrombocytopenia_X['PLATELETS'] / 1000
-    
+    # Convert to the units the thrombocytopenia contract declares.
+    thrombocytopenia_X = to_contract_units(
+        thrombocytopenia_X, "cbc_with_thrombocytopenia_risk.csv", "thrombocytopenia"
+    )
+
     print(f"  Features: {thrombocytopenia_features}")
     print(f"  Feature ranges - RBC: [{thrombocytopenia_X['RBC'].min():.2f}, {thrombocytopenia_X['RBC'].max():.2f}], "
           f"WBC: [{thrombocytopenia_X['WBC'].min():.2f}, {thrombocytopenia_X['WBC'].max():.2f}], "
@@ -283,16 +358,24 @@ def save_models(results_dict):
         joblib.dump(task_results['label_encoder'], encoder_file)
         print(f"Saved {task_name} encoder: {encoder_file}")
         
-        # Save metadata
+        # Save metadata. The feature table now names the unit of every
+        # column, not just the column. Writing names alone was the gap in
+        # CLAUDE.md Finding 7: the scale the artefact expected existed
+        # nowhere in the saved state, so nothing loading it could check.
+        contract = contract_for(task_name)
         with open(metadata_file, 'w') as f:
             f.write(f"{task_name.upper()} Risk Prediction Model\n")
             f.write(f"{'=' * 50}\n\n")
             f.write(f"Model Type: {task_results['best_model_name']}\n")
             f.write(f"Test Accuracy: {task_results['all_results'][task_results['best_model_name']]['test_accuracy']:.4f}\n")
             f.write(f"CV Score: {task_results['all_results'][task_results['best_model_name']]['cv_score']:.4f}\n\n")
-            f.write(f"Features: {', '.join(task_results['feature_names'])}\n\n")
+            f.write("Feature contract (order matters; units are part of it):\n")
+            for position, feature in enumerate(contract.features):
+                f.write(f"  {position}. {feature.analyte:<12} {feature.unit}\n")
+            f.write("\nDeclared in model_contract.MODEL_CONTRACTS. An estimator\n")
+            f.write("whose inputs do not match this contract must not be served.\n\n")
             f.write(f"Classes: {', '.join(task_results['label_encoder'].classes_)}\n")
-        
+
         print(f"Saved {task_name} metadata: {metadata_file}\n")
     
     # Also save latest versions (without timestamp for easy access)
