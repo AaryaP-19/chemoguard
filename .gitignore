@@ -1,0 +1,10 @@
+﻿.env
+venv/
+.venv/
+__pycache__/
+*.pkl
+uploads/
+__MACOSX/
+*.sqlite
+data/cache/
+.DS_Store
