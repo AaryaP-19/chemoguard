@@ -19,7 +19,7 @@ from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
 
-from cbc import ANALYTES, CBCPanel, build_panel
+from cbc import ANALYTES, build_panel
 
 db = SQLAlchemy()
 

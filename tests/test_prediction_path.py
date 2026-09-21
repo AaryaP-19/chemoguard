@@ -243,7 +243,7 @@ def test_the_pdf_prints_the_unit_the_value_is_actually_in(
 
     from pdf_text import extract_text   # local helper, defined below
     from export import generate_pdf_report
-    from database import User, db
+    from database import User
 
     with flask_app.app_context():
         user = User.query.filter_by(username="units_tester").first()

@@ -14,7 +14,7 @@ from cbc import (
     panel_from_extraction,
     panel_from_mapping,
 )
-from clinical_flags import flag_for, flags_for
+from clinical_flags import flag_for
 from model_contract import contract_for, features_for
 from units import (
     IncompatibleUnitsError,

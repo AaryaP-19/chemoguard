@@ -5,7 +5,7 @@ Main routes for ChemoGuard application including file upload, prediction, and re
 from flask import Blueprint, request, jsonify, send_file, current_app
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
-from cbc import ANALYTES, panel_from_mapping
+from cbc import panel_from_mapping
 from database import (
     db,
     MedicalReport,
