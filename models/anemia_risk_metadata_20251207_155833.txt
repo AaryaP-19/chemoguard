@@ -1,0 +1,10 @@
+ANEMIA Risk Prediction Model
+==================================================
+
+Model Type: Random Forest
+Test Accuracy: 0.9993
+CV Score: 0.9995
+
+Features: RBC, WBC, PLATELETS
+
+Classes: High, Low, Medium

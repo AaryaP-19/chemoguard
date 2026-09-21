@@ -1,0 +1,10 @@
+NEUTROPENIA Risk Prediction Model
+==================================================
+
+Model Type: Gradient Boosting
+Test Accuracy: 0.9993
+CV Score: 0.9998
+
+Features: RBC, WBC, PLATELETS, ANC
+
+Classes: High, Low, Medium

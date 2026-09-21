@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChemoGuard - Toxicity Risk Prediction System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style_new.css') }}">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar" id="navbar">
+        <div class="nav-container">
+            <div class="nav-brand">
+                <h1>ChemoGuard</h1>
+            </div>
+            <div class="nav-menu" id="navMenu">
+                <a href="#" class="nav-link" data-section="predict">Predict</a>
+                <a href="#" class="nav-link" data-section="upload" id="uploadLink" style="display: none;">Upload Report</a>
+                <a href="#" class="nav-link" data-section="history" id="historyLink" style="display: none;">History</a>
+                <a href="#" class="nav-link" data-section="profile" id="profileLink" style="display: none;">Profile</a>
+            </div>
+            <div class="nav-auth" id="navAuth">
+                <button class="btn btn-outline" id="loginBtn">Login</button>
+                <button class="btn btn-primary" id="registerBtn">Register</button>
+            </div>
+            <div class="nav-user" id="navUser" style="display: none;">
+                <span id="userName"></span>
+                <button class="btn btn-outline" id="logoutBtn">Logout</button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="container">
+        <!-- Login Modal -->
+        <div class="modal" id="loginModal">
+            <div class="modal-content">
+                <span class="close" id="closeLogin">&times;</span>
+                <h2>Login</h2>
+                <form id="loginForm">
+                    <div class="form-group">
+                        <label>Username or Email</label>
+                        <input type="text" id="loginUsername" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" id="loginPassword" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block">Login</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Register Modal -->
+        <div class="modal" id="registerModal">
+            <div class="modal-content">
+                <span class="close" id="closeRegister">&times;</span>
+                <h2>Register</h2>
+                <form id="registerForm">
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="regUsername" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" id="regEmail" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Full Name</label>
+                        <input type="text" id="regFullName">
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" id="regPassword" required minlength="6">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block">Register</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Predict Section -->
+        <section id="predictSection" class="section active">
+            <div class="section-header">
+                <h2>🔬 Toxicity Risk Prediction</h2>
+                <p>Enter blood parameters to predict anemia, neutropenia, and thrombocytopenia risks</p>
+            </div>
+
+            <div class="form-container">
+                <form id="predictionForm">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="rbc">
+                                <strong>RBC (Red Blood Cells)</strong>
+                                <span class="unit">millions/μL</span>
+                            </label>
+                            <input type="number" id="rbc" step="0.01" min="0" required placeholder="e.g., 4.5" value="4.5">
+                            <small>Normal range: 4.0 - 6.0 millions/μL</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="wbc">
+                                <strong>WBC (White Blood Cells)</strong>
+                                <span class="unit">cells/μL or thousands/μL</span>
+                            </label>
+                            <input type="number" id="wbc" step="0.1" min="0" required placeholder="e.g., 8.0" value="8.0">
+                            <small>Normal range: 4,000 - 11,000 cells/μL</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="platelets">
+                                <strong>Platelets</strong>
+                                <span class="unit">cells/μL or thousands/μL</span>
+                            </label>
+                            <input type="number" id="platelets" step="0.1" min="0" required placeholder="e.g., 250" value="250">
+                            <small>Normal range: 150,000 - 450,000 cells/μL</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="anc">
+                                <strong>ANC (Absolute Neutrophil Count)</strong>
+                                <span class="unit">cells/μL</span>
+                                <span class="optional">(Optional)</span>
+                            </label>
+                            <input type="number" id="anc" step="0.1" min="0" placeholder="e.g., 5.0">
+                            <small>Required for neutropenia prediction</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="neutrophils_percent">
+                                <strong>Neutrophils Percentage</strong>
+                                <span class="unit">%</span>
+                                <span class="optional">(Optional)</span>
+                            </label>
+                            <input type="number" id="neutrophils_percent" step="0.1" min="0" max="100" placeholder="e.g., 60">
+                            <small>Used to calculate ANC if not provided</small>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-large" id="submitBtn">
+                        <span class="btn-text">Predict Risks</span>
+                        <span class="btn-loader" style="display: none;">⏳ Processing...</span>
+                    </button>
+                </form>
+            </div>
+
+            <div id="results" class="results-container" style="display: none;">
+                <h2>Prediction Results</h2>
+                <div id="combinedSeverity" class="combined-severity" style="display: none;"></div>
+                <div class="results-grid" id="resultsGrid"></div>
+                <div class="result-actions" id="resultActions" style="display: none;">
+                    <button class="btn btn-outline" onclick="exportPDF()">📄 Export PDF</button>
+                    <button class="btn btn-outline" onclick="shareQR()">📱 Share QR Code</button>
+                    <button class="btn btn-secondary" onclick="resetForm()">New Prediction</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Upload Section -->
+        <section id="uploadSection" class="section">
+            <div class="section-header">
+                <h2>📄 Upload Medical Report</h2>
+                <p>Upload PDF or image files to automatically extract blood parameters</p>
+            </div>
+
+            <div class="upload-container">
+                <div class="upload-area" id="uploadArea">
+                    <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png,.tiff,.bmp" style="display: none;">
+                    <div class="upload-content">
+                        <div class="upload-icon">📁</div>
+                        <h3>Drop your file here or click to browse</h3>
+                        <p>Supports PDF, JPEG, PNG, TIFF, BMP</p>
+                        <button type="button" class="btn btn-primary" id="chooseFileBtn">Choose File</button>
+                    </div>
+                </div>
+
+                <div id="uploadProgress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <p id="progressText">Uploading and processing...</p>
+                </div>
+
+                <div id="extractedData" class="extracted-data" style="display: none;">
+                    <h3>Extracted Parameters</h3>
+                    <div class="extracted-grid" id="extractedGrid"></div>
+                    <button class="btn btn-primary" onclick="useExtractedData()">Use These Values for Prediction</button>
+                </div>
+            </div>
+
+            <div id="reportsList" class="reports-list"></div>
+        </section>
+
+        <!-- History Section -->
+        <section id="historySection" class="section">
+            <div class="section-header">
+                <h2>📊 Prediction History</h2>
+                <p>View your previous predictions and track trends</p>
+            </div>
+
+            <div id="historyList" class="history-list">
+                <p class="empty-state">No predictions yet. Make your first prediction!</p>
+            </div>
+        </section>
+
+        <!-- Profile Section -->
+        <section id="profileSection" class="section">
+            <div class="section-header">
+                <h2>👤 User Profile</h2>
+                <p>Manage your account information</p>
+            </div>
+
+            <div class="profile-container">
+                <form id="profileForm">
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="profileUsername" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" id="profileEmail" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Full Name</label>
+                        <input type="text" id="profileFullName">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Update Profile</button>
+                </form>
+            </div>
+        </section>
+
+        <!-- Message Display (Error/Success/Info) -->
+        <div id="error" class="message-container" style="display: none;">
+            <div class="message-content">
+                <h3 id="messageTitle">⚠️ Error</h3>
+                <p id="errorText"></p>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script_new.js') }}"></script>
+</body>
+</html>

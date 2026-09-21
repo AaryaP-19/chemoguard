@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hematological Risk Prediction System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🩸 Hematological Risk Prediction System</h1>
+            <p class="subtitle">Predict Anemia, Neutropenia, and Thrombocytopenia Risks</p>
+        </header>
+
+        <main>
+            <div class="form-container">
+                <form id="predictionForm">
+                    <div class="form-section">
+                        <h2>Input Parameters</h2>
+                        
+                        <div class="form-group">
+                            <label for="rbc">
+                                <strong>RBC (Red Blood Cells)</strong>
+                                <span class="unit">millions/μL</span>
+                            </label>
+                            <input type="number" id="rbc" name="rbc" step="0.01" min="0" required 
+                                   placeholder="e.g., 4.5" value="4.5">
+                            <small>Normal range: 4.0 - 6.0 millions/μL</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="wbc">
+                                <strong>WBC (White Blood Cells)</strong>
+                                <span class="unit">cells/μL or thousands/μL</span>
+                            </label>
+                            <input type="number" id="wbc" name="wbc" step="0.1" min="0" required 
+                                   placeholder="e.g., 8000 or 8.0" value="8.0">
+                            <small>Normal range: 4,000 - 11,000 cells/μL (or 4.0 - 11.0 thousands/μL)</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="platelets">
+                                <strong>Platelets</strong>
+                                <span class="unit">cells/μL or thousands/μL</span>
+                            </label>
+                            <input type="number" id="platelets" name="platelets" step="0.1" min="0" required 
+                                   placeholder="e.g., 250000 or 250" value="250">
+                            <small>Normal range: 150,000 - 450,000 cells/μL (or 150 - 450 thousands/μL)</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="anc">
+                                <strong>ANC (Absolute Neutrophil Count)</strong>
+                                <span class="unit">cells/μL or thousands/μL</span>
+                                <span class="optional">(Optional)</span>
+                            </label>
+                            <input type="number" id="anc" name="anc" step="0.1" min="0" 
+                                   placeholder="e.g., 5000 or 5.0">
+                            <small>Required for neutropenia prediction. Normal: ≥ 1,500 cells/μL</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="neutrophils_percent">
+                                <strong>Neutrophils Percentage</strong>
+                                <span class="unit">%</span>
+                                <span class="optional">(Optional)</span>
+                            </label>
+                            <input type="number" id="neutrophils_percent" name="neutrophils_percent" 
+                                   step="0.1" min="0" max="100" placeholder="e.g., 60">
+                            <small>Used to calculate ANC if ANC is not provided directly</small>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="submit-btn" id="submitBtn">
+                        <span class="btn-text">Predict Risks</span>
+                        <span class="btn-loader" style="display: none;">⏳ Processing...</span>
+                    </button>
+                </form>
+            </div>
+
+            <div id="results" class="results-container" style="display: none;">
+                <h2>Prediction Results</h2>
+                
+                <div class="results-grid">
+                    <div class="result-card" id="anemiaResult">
+                        <div class="result-header">
+                            <h3>Anemia Risk</h3>
+                            <span class="risk-badge" id="anemiaBadge">-</span>
+                        </div>
+                        <div class="result-content">
+                            <div class="probability-bar" id="anemiaProbabilities"></div>
+                        </div>
+                    </div>
+
+                    <div class="result-card" id="neutropeniaResult">
+                        <div class="result-header">
+                            <h3>Neutropenia Risk</h3>
+                            <span class="risk-badge" id="neutropeniaBadge">-</span>
+                        </div>
+                        <div class="result-content">
+                            <div class="probability-bar" id="neutropeniaProbabilities"></div>
+                        </div>
+                    </div>
+
+                    <div class="result-card" id="thrombocytopeniaResult">
+                        <div class="result-header">
+                            <h3>Thrombocytopenia Risk</h3>
+                            <span class="risk-badge" id="thrombocytopeniaBadge">-</span>
+                        </div>
+                        <div class="result-content">
+                            <div class="probability-bar" id="thrombocytopeniaProbabilities"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="reset-btn" onclick="resetForm()">New Prediction</button>
+            </div>
+
+            <div id="error" class="error-container" style="display: none;">
+                <div class="error-message">
+                    <h3>⚠️ Error</h3>
+                    <p id="errorText"></p>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Hematological Risk Prediction System | Powered by Machine Learning</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
+
+

@@ -1,0 +1,10 @@
+THROMBOCYTOPENIA Risk Prediction Model
+==================================================
+
+Model Type: Gradient Boosting
+Test Accuracy: 1.0000
+CV Score: 1.0000
+
+Features: RBC, WBC, PLATELETS
+
+Classes: High, Low, Medium

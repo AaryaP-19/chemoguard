@@ -8,3 +8,9 @@ __MACOSX/
 *.sqlite
 data/cache/
 .DS_Store
+
+# Quarantined CBC data - withdrawn Mendeley source and its derivatives (CLAUDE.md Finding 5)
+cbc_with_anemia_risk.csv
+cbc_with_neutropenia_risk.csv
+cbc_with_thrombocytopenia_risk.csv
+BDCBC7196_Hematology_Dataset.csv

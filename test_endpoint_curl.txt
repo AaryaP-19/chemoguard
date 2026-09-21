@@ -1,0 +1,17 @@
+# Quick curl commands to test /predict endpoint
+# Copy and paste these commands into your terminal
+
+# Test 1: Basic request (RBC, WBC, Platelets only)
+curl -X POST http://localhost:5000/predict -H "Content-Type: application/json" -d "{\"rbc\": 4.5, \"wbc\": 7.0, \"platelets\": 250}"
+
+# Test 2: Full request with ANC
+curl -X POST http://localhost:5000/predict -H "Content-Type: application/json" -d "{\"rbc\": 4.5, \"wbc\": 7.0, \"platelets\": 250, \"anc\": 3.5}"
+
+# Test 3: Request with neutrophils_percent
+curl -X POST http://localhost:5000/predict -H "Content-Type: application/json" -d "{\"rbc\": 3.8, \"wbc\": 5.5, \"platelets\": 180, \"neutrophils_percent\": 45}"
+
+# Test 4: Health check
+curl -X GET http://localhost:5000/health
+
+
+

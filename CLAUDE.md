@@ -131,15 +131,37 @@ fifth fails (Finding 6), and the extremes are clamped (Finding 6). Do not
 repeat the phrase, and do not cite this dataset as clinically validated in the
 writeup or anywhere else.
 
-**Moved out of the repo, 2026-09-21.** The folder now lives at
-`C:\Users\tanii\Downloads\chemoguard-withdrawn-dataset\`, outside the working
-directory, retained for audit. It held the 543 KB source CSV described above
-and nothing else. It is gone from the repo because it is unread by any code,
-its upstream record is withdrawn, its licence is unknown, and its folder name
-asserts a clinical validation the data contradicts — an unlicensed, withdrawn,
-demonstrably synthetic file under that name is an invitation to train on it.
-The three derived CSVs still in the repo carry the same rows; they go once the
-NHANES loader lands.
+**Quarantined 2026-09-21 — all four files.** The source file and all three
+derived CSVs now live outside the repo at
+`C:\Users\tanii\Downloads\chemoguard-withdrawn-dataset\`, retained for audit:
+
+| File | Bytes |
+|---|---|
+| `Clinically Validated CBC Dataset of 7,196 Samples/BDCBC7196_Hematology_Dataset.csv` | 543,337 |
+| `cbc_with_anemia_risk.csv` | 653,977 |
+| `cbc_with_neutropenia_risk.csv` | 766,147 |
+| `cbc_with_thrombocytopenia_risk.csv` | 672,104 |
+
+Each was SHA-256 matched and re-read at the destination *before* the original
+was deleted — 7,196 rows, zero nulls, all 16 shared columns reconciled against
+the source (allowing the ÷1000 on the anemia file). No CSV remains anywhere in
+the repo.
+
+Removing the source alone achieved nothing: the three derived CSVs carry the
+same 7,196 rows, so the data was still in-tree. All four had to go together.
+
+**Nothing trains on these again.** They are unlicensed, their upstream record
+is withdrawn, roughly 90% of rows fail joint coherence (Finding 6), and the
+labels are threshold rules over the inputs (Finding 1). They are kept solely
+so the audit trail is reproducible. Do not copy them back, do not point a
+loader at the quarantine path, and do not commit them. No CSV was ever tracked
+by git or entered history; `.gitignore` now names all four as a guard against
+someone re-downloading them.
+
+**Expected breakage:** `train_risk_prediction_models.py:43-45` now reads three
+files that no longer exist and will raise `FileNotFoundError`. This is
+intended and should not be patched — that loader gets rewritten against NHANES
+under the work order in Direction.
 
 ## Finding 6 — a fifth failed identity, and clamped extremes
 
@@ -225,12 +247,16 @@ against an explicit-unit boundary rather than retrofitted afterwards.
   first, plus per-class recall and calibration. The baselines are high (69%,
   92%, 91%) — a model that doesn't clear them by a wide margin has learned
   little.
-- **Never commit** `.env`, `venv/`, `uploads/`, `*.pkl`, or NHANES caches.
+- **Never commit** `.env`, `venv/`, `uploads/`, `*.pkl`, NHANES caches, or
+  the four quarantined CBC CSVs (Finding 5).
 - No real patient data in the repo. NHANES and MIMIC are de-identified
   research datasets; anything else is out of bounds.
 
 ## Known issues not yet fixed
 
+- `train_risk_prediction_models.py:43-45` reads three CSVs that are now
+  quarantined (Finding 5), so the script raises `FileNotFoundError`.
+  Expected — it gets rewritten against NHANES, not patched.
 - `app.py:338` and `app_new.py:391` — `debug=True, host='0.0.0.0'`. The
   Werkzeug console is remote code execution on all interfaces.
 - `routes.py:23-24` — `/upload` is unauthenticated, with a `user_id = 0`
