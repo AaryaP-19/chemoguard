@@ -87,6 +87,14 @@ MILLION_PER_UL = Unit("million/uL", Dimension.COUNT_CONCENTRATION, 1e6, "million
 
 G_PER_DL = Unit("g/dL", Dimension.MASS_CONCENTRATION, 1.0, "g/dL")
 G_PER_L = Unit("g/L", Dimension.MASS_CONCENTRATION, 0.1, "g/L")
+# Iron-status and inflammation markers live six to seven orders of magnitude
+# below haemoglobin, but they are the same dimension and belong on the same
+# scale rather than in a parallel one: 1 ug/L = 1e-6 g/L = 1e-7 g/dL, and
+# 1 mg/L = 1e-3 g/L = 1e-4 g/dL. Putting them here means a ferritin handed to
+# a haemoglobin field converts rather than silently passing, and then fails
+# its plausibility bound instead of being believed.
+MICROGRAM_PER_L = Unit("ug/L", Dimension.MASS_CONCENTRATION, 1e-7, "µg/L")
+MILLIGRAM_PER_L = Unit("mg/L", Dimension.MASS_CONCENTRATION, 1e-4, "mg/L")
 
 FEMTOLITRE = Unit("fL", Dimension.VOLUME, 1.0, "fL")
 PICOGRAM = Unit("pg", Dimension.MASS, 1.0, "pg")
@@ -98,6 +106,8 @@ ALL_UNITS = (
     MILLION_PER_UL,
     G_PER_DL,
     G_PER_L,
+    MICROGRAM_PER_L,
+    MILLIGRAM_PER_L,
     FEMTOLITRE,
     PICOGRAM,
     PERCENT,
@@ -155,6 +165,11 @@ _register(
 )
 _register(G_PER_DL, "g/dL", "gm/dL", "gms/dL", "gm%", "g%", "gram/dL")
 _register(G_PER_L, "g/L", "gm/L")
+# ng/mL is exactly ug/L -- a nanogram per millilitre is a microgram per litre
+# -- which is why NHANES publishes ferritin twice, as LBXFER in ng/mL and
+# LBDFERSI in ug/L, and says the conversion factor is 1.00.
+_register(MICROGRAM_PER_L, "ug/L", "mcg/L", "ng/mL", "ng/ml", "ug/l")
+_register(MILLIGRAM_PER_L, "mg/L", "mg/l", "ug/mL")
 _register(FEMTOLITRE, "fL", "femtolitre", "femtoliter", "cu microns", "um^3")
 _register(PICOGRAM, "pg", "picogram", "picogramme", "pcg")
 _register(PERCENT, "%", "percent", "pct", "per cent")

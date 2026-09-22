@@ -78,9 +78,24 @@ Identities that hold in any real CBC do not hold here:
 | MCH = Hb/RBC×10 | 0.160 |
 | MCHC = Hb/HCT×100 | 0.049 |
 
-Around 3,000–3,800 of 7,196 rows survive coherence and plausibility filtering,
-depending on tolerance. **The tolerance must be a named constant in
-`coherence.py`, not chosen per run** — otherwise the number isn't reproducible.
+**Resolved 2026-09-21 — the staged filter, and the numbers it produces.**
+The old figure here ("around 3,000–3,800 rows survive, depending on
+tolerance") and Finding 6's ("709 of 7,196") have both been withdrawn. They
+measured different things and neither was reproducible; see *Coherence: the
+staged filter* below for what replaces them and why the two disagreed.
+
+Under the filter now implemented in `chemoguard/data/coherence.py` —
+three exact analyser identities, jointly, at a 2% tolerance — **1,963 of
+7,196 legacy rows survive (27.28%)**, and 1,962 (27.27%) survive coherence
+*and* plausibility together. The same code on 19,749 NHANES rows leaves
+19,747 (99.99%).
+
+The tolerance is the named constant `EXACT_IDENTITY_TOLERANCE`, and
+`evaluate()` takes no tolerance argument at all, so it cannot be chosen per
+run. It is also not load-bearing: across a 10× sweep from 1% to 10% the
+legacy survivor count moves only 1,939 → 2,129 (26.95% → 29.59%). Those rows
+are not near-misses that a looser bound would admit; they are unrelated to
+their own derived values.
 
 10.6% of rows have WBC >100 thousand/µL (hyperleukocytosis — under 0.1% of any
 real population).
@@ -311,11 +326,14 @@ separate evidence from Finding 2.
 **Joint filtering is far more severe than Finding 2 implies.** Requiring all
 five identities within 5% leaves **709 of 7,196 rows (9.9%)** — 158 (2.2%) at
 1%, 1,524 (21.2%) at 10%. Per-identity pass rates at 5%: HCT 41.9%, MCV 76.0%,
-MCH 63.0%, MCHC 77.1%, PCT 51.4%. Finding 2's "3,000–3,800 rows survive" was
-computed over four identities and evidently not jointly. **Reconcile the two
-before quoting either number.** Caveat: HCT≈3×Hb is a clinical rule of thumb,
-not an exact identity, so a 5% bound on it is strict and drags the joint count
-down.
+MCH 63.0%, MCHC 77.1%, PCT 51.4%.
+
+**Superseded 2026-09-21.** Those five-identity counts are arithmetically
+correct and reproduce exactly — but the filter that produced them is the
+wrong filter, for two independent reasons, and the figure should not be
+quoted. See *Coherence: the staged filter* below. The caveat this entry
+already carried about HCT≈3×Hb turns out to be most of the story: it alone
+costs 84% of the survivors.
 
 ## Finding 7 — unit conventions inferred at fit time, never persisted
 
@@ -379,24 +397,658 @@ it does not run.
 
 ---
 
+## NHANES ingestion — landed 2026-09-21
+
+Real data, written against the explicit-unit boundary of Findings 4 and 7.
+
+| Module | What it owns |
+|---|---|
+| `scripts/fetch_nhanes.py` | CLI: download, cache, join, summarise. Decides nothing. |
+| `scripts/coherence_report.py` | The side-by-side run, and the tolerance sweep. |
+| `chemoguard/data/nhanes.py` | Cycle definitions, the column map, the unit of every column. |
+| `chemoguard/data/analytes.py` | MPV and plateletcrit; the one place a column is rescaled. |
+| `chemoguard/data/legacy_audit.py` | Audit-only reader for the quarantined copies. |
+| `chemoguard/data/coherence.py` | The staged filter. |
+
+**Cycles and counts.** 2021–August 2023 (`CBC_L` + `DEMO_L`) gives 7,593 rows;
+2017–March 2020 pre-pandemic (`P_CBC` + `P_DEMO`) gives 12,156; **19,749
+together**, joined to demographics on `SEQN`. 2,750 rows across the two files
+carried no CBC result at all — interviewed, never phlebotomised — and are
+dropped before any stage, because there is no measurement there to filter.
+
+The 2017–2020 file is not a two-year cycle. NHANES 2019–2020 was cut short by
+COVID-19, so CDC combined it with 2017–2018 into one pre-pandemic release with
+a `P_` prefix rather than a cycle suffix, and it names its sample weight
+`WTMECPRP` where the other names `WTMEC2YR`. Both are declared per cycle in
+`CYCLES`, not assumed.
+
+**Units come from the codebook, not from the values.** NHANES states the unit
+in the variable label itself — `LBXWBCSI - White blood cell count (1000
+cells/uL)` — and each label is quoted verbatim in the `documented_as` field
+beside the unit it justifies, so the claim is checkable without rerunning
+anything. `python scripts/fetch_nhanes.py --show-units` prints the map.
+
+The map is an explicit dictionary, never pattern matching. `LBXMC` is mean
+cell haemoglobin *concentration* (g/dL) and `LBXMCHSI` is mean cell
+haemoglobin (pg): one character apart, different dimensions, and exactly the
+pair a substring rule silently swaps.
+
+**Two things the loader records rather than papers over.**
+
+- **NHANES does not report plateletcrit.** `ABSENT_FROM_NHANES = ("pct",)`.
+  The PCT identity is therefore *not evaluable* on NHANES, which is not the
+  same as passing, and the report prints "not reported" rather than skipping
+  the check. Any NHANES-vs-legacy comparison is over two identities on one
+  side and three on the other; quote it that way. `test_coherence.py` pins
+  this — a filter that silently drops a missing identity hands NHANES an
+  easier test and makes the whole contrast meaningless.
+- **`LBDNENO` is segmented neutrophils only.** NHANES derives it as
+  `LBXWBCSI × LBXNEPCT/100`, rounded to one decimal, and does not report
+  bands separately. It is a slight underestimate of a clinical ANC. Mapped to
+  `anc` because it is the best available, with the discrepancy written down
+  at the mapping rather than discovered later.
+
+**For the labelling step that comes next:** NHANES measures CBC from age 1,
+and the joined age range is 1–80 years. WHO anaemia cut-offs are age-specific
+below 15 and differ again in pregnancy, so `RIDEXPRG` is joined now rather
+than rejoined later. This is the opposite problem to the withdrawn dataset,
+whose age span was exactly 20–69 (Finding 6).
+
+## Coherence: the staged filter
+
+`chemoguard/data/coherence.py`. Four stages, each with its own reported
+survivor count. There is no headline number, because the previous single
+figure came from mixing two methods.
+
+**Stage 1 — exact analyser identities, jointly, at 2%.** `MCV = HCT/RBC×10`,
+`MCH = Hb/RBC×10`, `PCT = PLATELETS×MPV/10000`. Only these three filter.
+
+**Stage 2 — MCHC, checked and reported, excluded from the filter.** It is
+algebraically implied by the two identities already in it:
+
+```
+MCH / MCV × 100  =  (Hb/RBC × 10) / (HCT/RBC × 10) × 100  =  Hb/HCT × 100  =  MCHC
+```
+
+RBC cancels. Counting MCHC again double-counts the same evidence. Measured,
+not just asserted: among legacy rows passing MCV and MCH, **99.15% pass MCHC**
+against a marginal rate of 74.96%; on NHANES the conditional rate is 100.00%.
+Adding it to the joint filter costs 29 legacy rows for no new information.
+
+**Stage 3 — HCT ≈ 3×Hb, reported at a 15% band, excluded from the filter.**
+It is the MCHC identity with MCHC pinned at 33.3: `HCT = Hb/MCHC × 100`, so
+`HCT = 3×Hb` exactly when MCHC = 33.3 g/dL and is wrong by however much real
+MCHC differs. A bedside rule of thumb, not an analyser identity. At a band
+wide enough to be fair to it, 99.90% of NHANES rows pass, so it earns a report
+line and not a filter.
+
+Held at the 2% meant for exact identities it would cost **84% of the legacy
+survivors** (1,963 → 313) — because MCHC is not 33.3, which is a property of
+being alive rather than of being synthetic. Even at its own 15% band it
+still removes 210 coherent rows (1,963 → 1,753), which is why it is excluded
+outright rather than merely widened.
+
+**Stage 4 — plausibility bounds, separate stage, separate count.** A
+different question: an identity asks whether a row is self-consistent, a
+bound asks whether a value could be a measurement at all. Bounds are the ones
+`cbc.ANALYTES` already declares — the same ones the API enforces on a live
+request — extended for MPV and plateletcrit in `chemoguard/data/analytes.py`.
+
+### Results, side by side
+
+2% exact-identity tolerance. All four quarantined files produce identical
+numbers, which is the check that their unit declarations are right — including
+the ÷1000 on `cbc_with_anemia_risk.csv` that is Finding 3.
+
+| Stage | NHANES (19,749) | Legacy (7,196) |
+|---|---|---|
+| loaded | 19,749 (100%) | 7,196 (100%) |
+| plausibility | 19,749 (100.00%) | 4,711 (65.47%) |
+| joint exact identities | **19,747 (99.99%)** | **1,963 (27.28%)** |
+| MCHC *(reported only)* | 19,749 (100.00%) | 5,394 (74.96%) |
+| HCT≈3×Hb @15% *(reported only)* | 19,730 (99.90%) | 5,642 (78.40%) |
+| coherent **and** plausible | 19,747 (99.99%) | 1,962 (27.27%) |
+
+Per-identity pass rates:
+
+| Identity | NHANES | Legacy |
+|---|---|---|
+| MCV | 99.99% | 75.21% |
+| MCH | 100.00% | 61.33% |
+| PCT | *not reported* | 51.13% |
+| MCHC | 100.00% | 74.96% |
+| HCT≈3×Hb @15% | 99.90% | 78.40% |
+
+Like for like — the two identities NHANES can be scored on — the contrast is
+**99.99% against 60.8%** (4,378 of 7,196 legacy rows pass MCV and MCH
+jointly). The 27.28% figure is over three identities and is the right number
+for the legacy data on its own terms; it is not comparable to NHANES.
+
+**The shape of the legacy curve is the finding, not the level.** Real
+analyser data saturates at 100% and stops. The legacy pass rate saturates at
+75% / 61% / 51% and is flat in the tolerance — 26.95% at 1% to 29.59% at 10%.
+A fixed fraction of rows satisfies each identity to the last decimal and the
+rest bear no relation to it. That is interleaved synthesis, and it is why no
+tolerance choice rescues the dataset.
+
+**Two NHANES rows fail**, both in 2017–2020, and both look like reporting
+floors rather than measurements: MCV pinned at exactly 35.4 (the column
+minimum) with MCHC at exactly 25.2 (also the column minimum), while their MCH
+identity passes to within 0.2%. The filter catching 2 rows in 19,749 — and
+catching the right ones — is the evidence that it is calibrated, not lax.
+
+### Why the old numbers disagreed, exactly
+
+Both prior figures are withdrawn. The reconciliation, since Finding 6 asked
+for one:
+
+- **Finding 6's 158 / 709 / 1,524 reproduce exactly**, and the method is what
+  was wrong with them: all five identities jointly, including the redundant
+  MCHC and the rule-of-thumb HCT check at a tolerance meant for exact
+  identities. Two of the five were never independent constraints.
+- **The one deliberate methodological change** is the denominator.
+  `_relative_error` divides by the *derived* value — the reference — where
+  Finding 6 divided by the reported one. Dividing by the reported value
+  scales the error by the quantity under test, so a row that overstates a
+  column is judged more leniently than one that understates it equally.
+  Switching the denominator back reproduces Finding 6's counts to the row;
+  keeping it on the derived value gives 157 / 683 / 1,392 for that same
+  five-identity filter.
+- **Finding 2's "3,000–3,800" could not be reproduced by any defensible
+  method** and has been removed rather than corrected. Per-identity pass
+  counts at 5% span 2,931 (HCT rule) to 5,554 (MCHC); no joint combination
+  lands in that range. It appears to have been a per-identity figure quoted
+  as though it were a joint one.
+
+### Rules this establishes
+
+- **Tolerances are module constants with a measured justification.**
+  `EXACT_IDENTITY_TOLERANCE = 0.02` is set by quantisation, not taste: NHANES
+  reports Hb/HCT/MCV/MCH/MCHC to one decimal and RBC to two, so at the low
+  end of each column the MCH identity cannot do better than
+  `0.05/5.4 + 0.005/2.32 + 0.05/10.2 = 1.63%`. The observed maximum over
+  19,749 rows is 1.41%, inside that bound. 2% clears both and rejects
+  nothing on rounding alone.
+- **`evaluate()` takes no tolerance argument.** A per-run tolerance is what
+  made the old number unreproducible; there is no override to pass.
+- **An absent column is never a pass.** Reported as not evaluable, and the
+  joint filter names which identities it actually applied.
+- **Never quote a single survivor count.** Quote the stage.
+
+## Labels and features — landed 2026-09-21
+
+`chemoguard/labels.py`, `chemoguard/features.py`, `chemoguard/leakage.py`,
+`scripts/build_labels.py`. Run the whole thing with
+`python scripts/build_labels.py`.
+
+**Thresholds are WHO 2024, not 2011.** WHO replaced the 2011 table in March
+2024 (*Haemoglobin cutoffs to define anaemia in individuals and populations*,
+ISBN 978-92-4-008854-2, Table 3). The **adult bands did not change** — men
+15–65 and non-pregnant women 15–65 are exactly the 2011 values. Three things
+around them did:
+
+- **6–59 months was split.** 6–23 months has its own lower cutoff (105 g/L,
+  down from 110); 24–59 months keeps 110.
+- **Pregnancy is trimester-specific**: 110 / 105 / 110 g/L.
+- **The adult rows are scoped to ages 15–65.** WHO names haemoglobin in
+  over-65s as an open research gap. There is no WHO cutoff for that group.
+
+Thresholds are declared **in g/L, the unit WHO prints them in**, and
+converted by `Quantity.to`. Hand-converting a clinical table is a
+transcription error waiting to happen.
+
+**Three stated exclusions**, each counted rather than inferred:
+
+| Excluded | Rows | Why |
+|---|---|---|
+| Age > 65 | 3,707 (18.8%) | Outside the range WHO scopes its own cutoff to. `allow_over_65=True` labels them and marks them `extrapolated`. |
+| Pregnant | 113 (0.57%) | 2024 cutoffs are trimester-specific; NHANES publishes `RIDEXPRG` without a trimester, and the choice moves the boundary by 5 g/L — half a severity band. |
+| Pregnancy unascertained | 56 | Same reason. |
+
+Plus two recorded assumptions: 3,577 women aged 15–65 have no NHANES
+pregnancy record and are treated as not pregnant; and haemoglobin is **not**
+adjusted for elevation or smoking, both of which WHO 2024 now recommends.
+Neither adjustment is available from the public release as joined — elevation
+is restricted-use, smoking is in `SMQ`. Both would *raise* the threshold, so
+unadjusted labels under-call anaemia. Every error points from abnormal toward
+normal, which is the direction Finding 4 is about.
+
+Result on 19,749 rows: **15,873 labelled** — none 14,555 (91.70%), mild 932
+(5.87%), moderate 357 (2.25%), severe 29 (0.18%). Morphology from MCV:
+normocytic 17,180, microcytic 2,358, macrocytic 211.
+
+**`green_king` is not the Green & King index.** The published 1989 formula is
+`MCV² × RDW / (Hb × 100)`. What is implemented is `RDW × MCV / RBC`, as
+specified in the work order — an Hb-free variant over the same three red-cell
+inputs. The published form reads haemoglobin and so could not enter this
+matrix at all. Flagged because a reviewer reading the name will assume the
+1989 formula.
+
+## Finding 8 — the anaemia hold-out cannot work on a CBC panel
+
+Holding haemoglobin out of the anaemia task is not possible while the rest of
+the panel is present. This is Finding 1 wearing new clothes: the label is a
+threshold rule over something the feature matrix still contains.
+
+Every coherence identity is a route back:
+
+```
+MCH  = Hb/RBC × 10    ->  Hb  = MCH × RBC / 10
+MCV  = HCT/RBC × 10   ->  HCT = MCV × RBC / 10
+MCHC = Hb/HCT × 100   ->  Hb  = MCHC × MCV × RBC / 1000
+```
+
+**Fixing the data made this worse, not better.** On the withdrawn dataset
+only ~27% of rows satisfied these identities, so reconstruction would have
+been noise on three-quarters of the file. On NHANES 19,747 of 19,749 satisfy
+them to within 2%, so the reconstruction is essentially exact everywhere.
+
+Measured at three depths of hold-out. Majority-class baseline is **91.82%**,
+so the entire available headroom on this task is 8.18 points:
+
+| Profile | Closed-form Hb | Learned R² | Within 2% | Label agreement | Over baseline |
+|---|---|---|---|---|---|
+| `name-excluded` (17 cols) | **100.00%** | 0.9933 | 98.11% | 98.97% | **+7.16** |
+| `reconstruction-safe` (15) | none | 0.9521 | 63.34% | 97.23% | +5.41 |
+| `red-cell-free` (11) | none | 0.5130 | 22.68% | 92.47% | +0.65 |
+
+- **Dropping the column name achieves nothing.** `MCH × RBC / 10` recovers
+  haemoglobin on 100.00% of rows to within 2%, median error 0.199%. A learned
+  model gets MAE 0.059 g/dL and reproduces the WHO severity label 98.97% of
+  the time — **87% of all the headroom there is**, purely by arithmetic.
+- **Dropping MCH and MCHC is not enough either.** MCHC varies so little
+  between people that red cell mass alone predicts haemoglobin: `MCV × RBC`
+  still recovers *haematocrit* exactly (99.99%), and the label still comes
+  back 97.23% of the time.
+- **Breaking it means removing red cell mass entirely** — RBC, MCV, and the
+  derived indices that reconstruct MCV from their own definition
+  (`mentzer_index × RBC = MCV`). At that point the task is gone: +0.65 points
+  over baseline, with mild recall 15.2%, moderate 33.9%, severe 11.1%.
+
+**The same defect applies to the morphology label.** Microcytic/normocytic/
+macrocytic is a threshold rule over MCV, and MCV is a feature. Predicting it
+is arithmetic. It is still worth *computing* — as a stratifier, or as an
+input to a real task — but it is not a target.
+
+**What this means for the work order.** "WHO anaemia severity with Hb/HCT
+held out" is not a well-posed ML task on a CBC panel, and no feature
+selection rescues it. Computing the label is correct and useful; training a
+model to predict it is Finding 1 again. The defensible replacement is a
+target the CBC does **not** contain — most directly **iron deficiency**,
+which is what `mentzer_index` and Green & King exist to discriminate in the
+first place. NHANES publishes ferritin and soluble transferrin receptor for
+both loaded cycles (`FERTIN_L` / `TFR_L`, `P_FERTIN` / `P_TFR`), joinable on
+the same `SEQN`. Ferritin is not recoverable from a CBC by any identity.
+
+`chemoguard/leakage.py` is the audit: `closed_form` walks the declared
+identities, `empirical` fits a model on a train split to catch routes nobody
+enumerated, and `label_recovery` asks the only question that matters —
+whether the reconstruction reproduces the label, reported against the
+majority baseline and with per-class recall, per the hard rule below.
+
+**Rule this establishes:** *a hold-out is a claim about algebra, not about
+column names.* Any future held-out target ships with a `leakage.audit` run,
+and `RECONSTRUCTION_TOLERANCE` is pinned to the coherence filter's tolerance
+so a leak cannot pass a test the data itself would fail.
+
+## Iron deficiency — the replacement target, landed 2026-09-21
+
+`chemoguard/iron.py`, `scripts/build_iron_target.py`. Taken because Finding 8
+killed the anaemia target. Ferritin is measured on a separate assay from a
+separate aliquot, no CBC identity produces it, and it is the question the
+Mentzer and Green & King indices were invented to answer.
+
+**Thresholds are WHO 2020**, *Serum ferritin concentrations for the
+assessment of iron status in individuals and populations: technical brief*,
+Table 1, reproducing the 2020 guideline
+(https://apps.who.int/iris/handle/10665/331505):
+
+| Age | Healthy | With inflammation |
+|---|---|---|
+| 0–23 months, 24–59 months | <12 µg/L | <30 µg/L |
+| 5–<10 y, 10–<20 y, 20–59 y | <15 µg/L | <70 µg/L |
+| **60+ years** | **<15 µg/L** | **<70 µg/L** |
+
+**The over-65 exclusion does not carry over.** WHO's anaemia table stops at
+65 and calls older adults a research gap; its ferritin table has an explicit
+"Older persons (60+ years)" row at the same cut-off. Over-65s are labelled
+here, not excluded.
+
+### The NHANES ferritin subsample is the real constraint
+
+Ferritin is **not** run on the examined sample, and the eligibility rule
+differs between the two loaded releases. Quoted from the codebooks:
+
+| Cycle | Eligible sample | Ferritin ∩ CBC | Over-65s |
+|---|---|---|---|
+| 2021–2023 | "1–5 years old and 12–49 years old **females**" | 1,945 (25.6%) | **0** |
+| 2017–2020 | "1–5 years old and **12 years and older**" | 10,546 (86.8%) | 1,899 |
+
+The 2021–2023 contribution is 93% female with nobody over 49. Pooling without
+saying so builds a cohort whose demographic mix is an artefact of which cycle
+a row came from. `nhanes.FERRITIN_ELIGIBILITY_WARNING` travels with the
+dataset and `scripts/build_iron_target.py` prints the composition per cycle.
+sTfR is worse: a *different*, smaller subsample again, 5,561 rows in total.
+
+### Inflammation
+
+Ferritin is an acute-phase reactant, so a fixed threshold under-calls
+deficiency in inflamed people. WHO gives four remedies; this uses the first,
+**raising the cut-off for inflamed individuals**, with inflammation defined
+as **CRP > 5 mg/L** (WHO's own worked example). The other three are
+unavailable or worse here: the arithmetic and BRINDA-regression corrections
+both need AGP, which NHANES does not measure, and excluding the inflamed
+would bias the cohort toward the healthy in a way a model would inherit
+silently. CRP is available on 18,856 of 19,749 rows.
+
+**This choice is large and must be quoted with the prevalence.** It nearly
+doubles the measured rate: **7.27% unadjusted against 13.53% adjusted**.
+WHO says as much — "the application of different adjustment approaches will
+result in a high degree of variability in the estimated prevalence". Both
+numbers are in `IronLabelReport.prevalence`.
+
+Rows with no CRP are **excluded, not assumed uninflamed**: the healthy
+cut-off is the lower one, so assuming it would under-call deficiency, and
+every error would point abnormal → normal. That costs 288 rows.
+
+**Ferritin alone is the primary definition.** sTfR is a reported sensitivity
+analysis only: WHO sets no sTfR threshold because the assays are not
+standardised against a common reference, published cut-offs span 2.48–6.70
+mg/L by method, and requiring it costs 55% of the cohort.
+`STFR_ID_THRESHOLD` is 6.70 mg/L — the Roche immunoturbidimetric figure,
+matching the assay NHANES states it runs — and is flagged as not a WHO value.
+
+### Cohort, class balance and headroom (pooled — see *Training* for the real cohort)
+
+The figures in this subsection are for the **pooled** cohort, which is now
+a sensitivity analysis only. The training cohort is 2017–2020 alone; see
+*Training the iron classifier* below.
+
+19,749 rows in, **12,037 labelled**. Exclusions: no ferritin 7,255
+(the eligibility subsample), no CRP 288, pregnant 113, pregnancy
+unascertained 56. 2,320 labelled rows are inflamed.
+
+| | n | share |
+|---|---|---|
+| deficient | 1,629 | **13.53%** |
+| replete | 10,408 | 86.47% |
+| **majority-class baseline** | | **86.47%** |
+
+**Leak audit — the target is clean.** Same table as Finding 8:
+
+| | anaemia (`name-excluded`) | iron deficiency |
+|---|---|---|
+| closed-form route | **100.00%** | **none exists** |
+| learned R² | 0.9933 | **0.1585** |
+| within 2% | 98.11% | **2.29%** |
+| label agreement | 98.97% | 89.87% |
+| majority baseline | 91.82% | 86.88% |
+| over baseline | +7.16 | +2.99 |
+
+R² of 0.16 and a within-2% rate of 2.29% — barely above chance — is what a
+target outside the panel's arithmetic looks like. `leakage.FERRITIN_PATHS` is
+empty **by finding, not by omission**, and a test pins it so that adding a
+route later fails loudly.
+
+**Read the +2.99 correctly.** It comes from the audit's
+regression-then-threshold path, which is a lower bound, not the ceiling: it
+optimises ferritin in µg/L and only then thresholds. A direct classifier does
+better, and accuracy is the wrong metric on a 13.5% positive class anyway:
+
+| Model | Accuracy | over baseline | ROC AUC | Recall (deficient) |
+|---|---|---|---|---|
+| HistGradientBoosting | 89.95% | +3.49 | **0.8708** | 44.17% |
+| depth-3 tree | 88.68% | +2.21 | 0.8098 | 31.90% |
+
+**AUC 0.87 is the result**; the accuracy column is nearly all baseline. The
+depth-3 leakage test passes — 1.27 points and 0.061 AUC behind the ensemble —
+but it passes narrowly on accuracy, so quote the AUC gap, which is the
+clearer separation. Recall on the positive class is poor at the default
+threshold and will need calibration, not more features.
+
+### Feature renamed
+
+`green_king` was **not** the Green & King index. It is now:
+
+- **`rdw_weighted_mentzer`** — `RDW × MCV / RBC`, the formula previously
+  misnamed. Hb-free, so it survives an anaemia hold-out. No published
+  provenance; kept for that property alone.
+- **`green_king`** — the published 1989 index, `MCV² × RDW / (Hb × 100)`. It
+  reads haemoglobin, so it is available on the iron target and barred from
+  the anaemia one. That asymmetry is Finding 8 in one line.
+
+## Training the iron classifier — 2026-09-21
+
+`chemoguard/training.py`, `scripts/train_iron.py`. Stratified 5-fold × 5
+seeds = **25 fits**, every metric mean ± sd across folds.
+HistGradientBoostingClassifier, default hyperparameters — untuned, because
+the questions here are about the target and the cohort, not about squeezing
+the estimator.
+
+**Cohort: 2017–2020 only.** Not a sample-size call. NHANES ran ferritin on
+"1–5 years old and 12–49 years old females" in 2021–2023 and on "1–5 years
+old and 12 years and older" in 2017–2020, so the pooled cohort's sex and age
+distribution is partly a function of which release a row came from — and sex
+and age are *features of this model*, so the confound lands on the inputs
+rather than staying in the sampling frame where weighting could reach it.
+`TRAINING_CYCLES = ("2017-2020",)`. The pooled fit runs under
+`--cycles pooled` and is reported as a sensitivity analysis: it gives AUC
+0.8666 ± 0.0080 against 0.8658 ± 0.0139, i.e. the confound buys nothing.
+
+**Both label rules are trained and reported.** `adjust_for_inflammation` is
+keyword-only with no default. Neither setting is authoritative: WHO reports
+high variability across adjustment methods and BRINDA is unavailable without
+AGP, so quoting one alone would overstate what this project knows. CRP is
+required either way, so both run on exactly the same 10,181 rows and the
+difference between them measures the adjustment and nothing else.
+
+| | adjusted | unadjusted |
+|---|---|---|
+| labelled | 10,181 | 10,181 |
+| deficient | 1,183 (**11.62%**) | 624 (**6.13%**) |
+| majority baseline | 88.38% | 93.87% |
+| **ROC AUC** | **0.8658 ± 0.0139** | **0.9210 ± 0.0098** |
+| accuracy | 0.9102 ± 0.0038 (+2.64 pts) | 0.9532 ± 0.0018 (+1.45 pts) |
+| Brier | 0.0705 ± 0.0034 | 0.0377 ± 0.0017 |
+| average precision | 0.5991 (no-skill 0.1162) | 0.5996 (no-skill 0.0613) |
+| deficient P / R / F1 | 0.697 / 0.405 / 0.512 | 0.699 / 0.418 / 0.522 |
+| depth-3 AUC gap | 0.0630 | 0.0575 |
+
+**The unadjusted label is the easier task, not the better one.** Its AUC is
+five points higher because it is a pure ferritin threshold, where the
+adjusted label folds in inflammation status that a CBC sees only weakly
+through the white-cell channel. Do not read 0.92 > 0.87 as "the unadjusted
+rule works better" — they are different questions.
+
+Confusion matrix, adjusted, summed over 25 folds (n = 50,905):
+
+| | predicted replete | predicted deficient |
+|---|---|---|
+| **actual replete** | 43,938 | 1,052 |
+| **actual deficient** | 3,519 | 2,396 |
+
+**Depth-3 leakage test passes** on both rules: 0.8658 vs 0.8028 (gap 0.0630)
+and 0.9210 vs 0.8635 (gap 0.0575), against a 0.02 margin. The ensemble is
+doing more than thresholding, which is exactly what the anaemia label could
+not say.
+
+**Calibration is decent and biased one way.** Brier 0.0705 adjusted. The
+reliability curve is close to the diagonal below 0.3 and over-predicts above
+it — the 0.6–0.8 bins run about 0.045 high. Over-confident at the top end,
+which for a screening use would mean the high-probability group is less
+enriched than the score implies.
+
+### Subgroup breakdown, with intervals
+
+Out-of-fold, threshold 0.50, adjusted rule. AUC carries a Hanley & McNeil
+(1982) 95% interval — **whose width is set by the number of cases, not the
+number of rows**:
+
+| Group | n | cases | positive rate | AUC | 95% CI | recall |
+|---|---|---|---|---|---|---|
+| female | 5,121 | 974 | 0.190 | 0.8490 | [0.833, 0.865] | 0.466 |
+| male | 5,060 | 209 | 0.041 | 0.8171 | [0.782, 0.853] | **0.124** |
+| age 1–4 | 683 | **37** | 0.054 | 0.7233 | **[0.629, 0.818]** | **0.027** |
+| age 5–19 | 1,769 | 276 | 0.156 | 0.8467 | [0.817, 0.876] | 0.431 |
+| age 20–59 | 4,862 | 700 | 0.144 | 0.8982 | [0.883, 0.914] | 0.484 |
+| age 60+ | 2,867 | 170 | 0.059 | 0.7911 | [0.750, 0.832] | 0.124 |
+
+Which groups are **not** distinguishable from each other (overlapping
+intervals):
+
+| Group | overlaps |
+|---|---|
+| 1–4 | 5–19, 60+, male |
+| 5–19 | 1–4, 60+, female, male |
+| 20–59 | **separated from all others** |
+| 60+ | 1–4, 5–19, male |
+
+Comparing everything against the best-powered band alone would mislead: the
+20–59 interval is 0.031 wide, so *everything* separates from it. The
+pairwise view is the honest one.
+
+**Correction, 2026-09-21.** This entry previously read "under-5s are
+genuinely weak… AUC 0.7233 is materially below every other band". That
+overstated it. The under-5 interval is **[0.629, 0.818] — 6.1× wider than
+the 20–59 band's** — and overlaps 5–19, 60+ and male. The finding is
+*suggestive and underpowered*, not established. 37 cases cannot support the
+stronger claim.
+
+What survives:
+
+- **Male and 60+ recall collapse is a threshold artefact, not a
+  discrimination failure.** AUC 0.82 and 0.79 against 0.85 for women, with
+  overlapping intervals. What differs is prevalence (4.1% and 5.9% against
+  19.0%), so a fixed 0.50 cut almost never fires. A per-group operating
+  point would largely close this.
+- **The under-5 band is underpowered and should be reported separately**,
+  not because it is proven worse but because 37 cases cannot show either
+  way. Collect more or scope the model above it; do not quote 0.7233 as a
+  point estimate without its interval.
+
+### The paediatric MCV hypothesis — tested, not supported
+
+The proposed explanation for the weak under-5 band was that the features
+encode adult MCV scaling. Two things wrong with that as first stated, both
+recorded because the second is a real negative result:
+
+1. **The premise was imprecise.** The iron matrix feeds *raw continuous*
+   MCV; there are no cut-points in the features to be wrong. Only the
+   morphology label bands MCV, and morphology is not an iron feature. The
+   defensible version is that a tree trained on a mostly-adult cohort places
+   its MCV splits where adult data is dense.
+2. **Tested directly, and it does not hold.** `mcv_vs_age_lln` — MCV minus
+   the age-specific lower limit of normal (`70 + age` below 10, else 80;
+   Koerper & Dallman, *J Pediatr* 1976, PMID 956999) — was added as a
+   feature and the whole evaluation rerun on the identical cohort, label,
+   estimator and seeds.
+
+| Band | without `mcv_vs_age_lln` | with |
+|---|---|---|
+| OVERALL | 0.8658 ± 0.0139 | 0.8652 ± 0.0135 |
+| 1–4 | 0.7233 [0.629, 0.818] | 0.7114 [0.616, 0.807] |
+| 5–19 | 0.8467 | 0.8468 |
+| 20–59 | 0.8982 | 0.8974 |
+| 60+ | 0.7911 | 0.7928 |
+
+The under-5 AUC moves **−0.0119** against an interval half-width of 0.095.
+**The limitation is sample size, not age scaling.** Do not spend more effort
+on age-normalised red-cell features for this cohort; spend it on cases.
+
+`labels.mcv_lower_limit` and `morphology_for(mcv, age_years=...)` stay,
+because the morphology *label* genuinely was mis-scaled for children and
+that was worth fixing on its own. Passing no age keeps the adult behaviour,
+so nothing changed silently.
+
+### Figures
+
+`scripts/build_figures.py` writes `reports/figures/` — PNG at 150 dpi plus
+the CSV each was drawn from, so a number in the write-up traces to a row
+without rerunning anything.
+
+| Figure | What it shows |
+|---|---|
+| `coherence_tolerance_sweep` | The saturation curve. Strongest single piece of audit evidence. |
+| `reliability_curve` | Calibration; close below 0.3, over-confident above. |
+| `precision_recall_curve` | AP 0.5991 against a 0.1162 no-skill floor. |
+| `subgroup_auc` | AUC with Hanley-McNeil intervals. |
+| `confusion_matrix` | Threshold 0.50, summed over 25 folds. |
+
+Palette is a validated two-slot categorical set (blue `#2a78d6`, orange
+`#eb6834`): all-pairs CVD ΔE 24.7, normal-vision ΔE 33.6. Charts with two
+series carry a legend, so identity is never colour alone.
+
+**matplotlib is pinned to 3.8.4**, and the pin is load-bearing: 3.9+
+resolves numpy to 2.x, which breaks the numpy 1.x ABI scikit-learn 1.3.2 is
+built against, and pandas then fails at import with "numpy.dtype size
+changed". Installing it unpinned was tried on 2026-09-21 and did exactly
+that.
+
+### No operating point is chosen
+
+`training.threshold_table` reports candidates; nothing selects one. Adjusted
+rule, out-of-fold:
+
+| target recall | threshold | recall | precision | FPR | share flagged |
+|---|---|---|---|---|---|
+| 50% | 0.3582 | 0.500 | 0.621 | 0.040 | 9.4% |
+| 60% | 0.2291 | 0.600 | 0.515 | 0.074 | 13.5% |
+| 70% | 0.1379 | 0.701 | 0.423 | 0.126 | 19.3% |
+| 80% | 0.0709 | 0.801 | 0.324 | 0.220 | 28.7% |
+| 90% | 0.0288 | 0.900 | 0.225 | 0.408 | 46.5% |
+| 95% | 0.0151 | 0.950 | 0.178 | 0.577 | 62.0% |
+
+Choosing a row trades missed iron deficiency against over-referral. That is
+a judgement about relative clinical harm, and **this project is not
+positioned to make it** — it is a student exercise on public survey data,
+with no clinical validation, no intended-use statement and no care pathway
+behind it. The table is the deliverable; the choice is not.
+
 ## Direction
 
 Keep the app layer — auth, DB schema, both extraction backends, PDF export,
 REST API all work. Replace the dataset and the modelling layer.
 
-**Work order: ~~security~~ → ~~explicit units~~ → NHANES ingestion → labels
-→ training → extraction benchmark.** Units landed 2026-09-21; see the
-resolution notes under Findings 4 and 7.
+**Work order: ~~security~~ → ~~explicit units~~ → ~~NHANES ingestion~~ →
+~~labels~~ → ~~pick a target that isn't leaked~~ → ~~training~~ →
+extraction benchmark.** Units landed 2026-09-21; see Findings 4 and 7.
+Ingestion landed 2026-09-21; see *NHANES ingestion* and *Coherence: the
+staged filter*. Labels landed 2026-09-21, and Finding 8 retired the anaemia
+target they were built for. The target is iron deficiency from ferritin,
+audited clean. Training landed 2026-09-21: **AUC 0.8658 ± 0.0139** on
+2017–2020, depth-3 leakage test passed, no operating point selected. See
+*Training the iron classifier*.
+
+Open before anything ships, in order:
+
+1. **Per-subgroup operating points, or a documented single-group scope.** A
+   fixed 0.50 threshold gives 12% recall in men and 3% in under-5s, and that
+   is a threshold artefact on comparable ranking — the fixable one.
+2. **The under-5 band needs cases, not features.** 37 cases give an interval
+   6× wider than the adult band's, and the age-normalised MCV feature moved
+   it −0.012. Report the band separately or scope the model above it.
+3. Extraction benchmark (Tesseract vs GPT-4o-mini), still untouched.
 
 Units come before data ingestion deliberately. Finding 3 shows implicit units
 are already a source of silent corruption; the NHANES loader should be written
 against an explicit-unit boundary rather than retrofitted afterwards.
 
-- Real data: NHANES CBC (public, no application; cycle 2021–2023 = `CBC_L`,
-  plus 2017–2020), joined to demographics on `SEQN`. Files are XPT —
-  `pandas.read_sas`.
-- New tasks: WHO sex-adjusted anemia severity with `Hb`/`HCT` held out;
-  morphological subtype from MCV bands; joint multi-output cytopenia.
+- ~~Real data: NHANES CBC, joined to demographics on `SEQN`.~~ Done —
+  19,749 rows across 2021–2023 and 2017–2020. Load with
+  `chemoguard.data.nhanes.load_nhanes()`.
+- ~~New tasks: WHO sex-adjusted anemia severity with `Hb`/`HCT` held out;
+  morphological subtype from MCV bands~~ — both are threshold rules over
+  columns that stay in the matrix, and neither survives Finding 8. Compute
+  them; do not model them. Joint multi-output cytopenia has the same defect
+  for its anaemia component.
+- ~~Candidate replacement target: iron deficiency~~ — taken 2026-09-21 and
+  audited clean. See *Iron deficiency* above. The binding constraint is not
+  the target, it is that NHANES measures ferritin on a per-cycle eligibility
+  subsample.
+- Next, in order: calibrate the decision threshold (recall on the deficient
+  class is 44% at the default and the class is 13.5% of the cohort); decide
+  whether to pool the two cycles or restrict to 2017–2020, which is the only
+  one with a representative ferritin sample; then the extraction benchmark.
 - Second ML contribution: benchmark the two extraction backends (Tesseract vs
   GPT-4o-mini vision) per field on real report layouts.
 
@@ -405,8 +1057,17 @@ against an explicit-unit boundary rather than retrofitted afterwards.
 - **No bare numbers past the extraction boundary.** A value without a unit is
   a bug. No magnitude-based inference anywhere — `if value > 1000: value /=
   1000` is the exact pattern that produces Finding 4.
-- **Every model change ships with the depth-3 leakage test.** If a 3-level
-  tree comes within 1% of the ensemble, the label is a rule, not a target.
+- **Every model change ships with the depth-3 leakage test, scored on AUC.**
+  If a 3-level tree comes within **0.02 AUC** of the ensemble, the label is a
+  rule, not a target. `training.LEAKAGE_AUC_MARGIN`.
+
+  **Changed from accuracy 2026-09-21.** The rule used to read "within 1% of
+  the ensemble" on accuracy, which is the wrong scale on an imbalanced
+  target: at an 88% majority class the two models were 1.27 accuracy points
+  apart — inside fold-to-fold noise — while being 0.063 apart in AUC, which
+  is not. Accuracy is compressed against the base rate; AUC is not. The
+  margin sits above the measured fold-to-fold AUC sd (~0.014 over 25 folds)
+  and well below the gap a learnable target shows.
 - **Never report bare accuracy.** Always with the majority-class baseline
   first, plus per-class recall and calibration. The baselines are high (69%,
   92%, 91%) — a model that doesn't clear them by a wide margin has learned
@@ -530,6 +1191,12 @@ It is kept only because it works on 3.12 and nothing forces a change today.
 Verified on Python 3.12.10: clean install, `pip check` reports no broken
 requirements, all three pickles load without warnings, and `import app`
 succeeds with all three models loaded.
+
+`chemoguard/data` needs pandas and nothing else. Its output is byte-identical
+on the pinned pandas 2.1.4 and on 3.0.6, so the coherence numbers above do not
+depend on which is installed. Note that `tests/conftest.py` imports `app` at
+module scope, so the whole suite — including `test_coherence.py`, which only
+needs pandas — fails at collection without Flask installed.
 
 ## Conventions
 

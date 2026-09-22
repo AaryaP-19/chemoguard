@@ -1,0 +1,5 @@
+actual,predicted,count,row_share
+replete,replete,43938,0.97662
+replete,deficient,1052,0.02338
+deficient,replete,3519,0.59493
+deficient,deficient,2396,0.40507
