@@ -1,0 +1,9 @@
+Anemia Case CBC Report
+Hospital: City Oncology Diagnostic Center
+Patient ID: DEMO-001
+Test              Result
+Hemoglobin        9.4 g/dL
+RBC Count         3.2 million cells/mcL
+WBC Count         5,100 cells/mcL
+Platelet Count    210,000 /mcL
+Note: Synthetic report generated for academic use only.

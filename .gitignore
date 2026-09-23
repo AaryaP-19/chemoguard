@@ -1,4 +1,4 @@
-﻿.env
+.env
 venv/
 .venv/
 __pycache__/
@@ -14,3 +14,7 @@ cbc_with_anemia_risk.csv
 cbc_with_neutropenia_risk.csv
 cbc_with_thrombocytopenia_risk.csv
 BDCBC7196_Hematology_Dataset.csv
+
+# Generated extraction-benchmark corpus (scripts/build_extraction_corpus.py).
+# Regenerable and deterministic; the manifest is the reviewable artefact.
+data/extraction_corpus/

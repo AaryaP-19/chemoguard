@@ -22,6 +22,7 @@ where the encoding is under our control.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -114,20 +115,67 @@ ALL_UNITS = (
 )
 
 
+#: A result flag printed inside the units cell. ``test_2.jpg`` prints
+#: "cells/uL (Low)"; a report that flags an abnormal value in the same cell as
+#: the unit should not thereby make the unit unreadable. Stripped before
+#: anything else, because ``_normalise`` drops parentheses further down and
+#: "cells/uL (Low)" would otherwise become the key "cellsullow".
+_RESULT_FLAG = re.compile(
+    r"[\s*#!]*\(\s*(?:low|high|l|h|abn|abnormal|crit|critical|panic)\s*\)[\s*#!]*$",
+    re.IGNORECASE,
+)
+
+#: A bare marker with no parentheses -- "cells/uL *" or "12.4 g/dL #".
+_BARE_MARKER = re.compile(r"[\s*#!]+$")
+
+#: Superscript digits, for the exponent forms reports actually print. A
+#: laboratory writes 10⁹/L, not 10^9/L; the caret form is the plain-text
+#: transliteration and both have to resolve to the same unit.
+_SUPERSCRIPTS = {
+    "⁰": "0", "¹": "1", "²": "2", "³": "3",
+    "⁴": "4", "⁵": "5", "⁶": "6", "⁷": "7",
+    "⁸": "8", "⁹": "9",
+}
+
+_SUPERSCRIPT_RUN = re.compile("[" + "".join(_SUPERSCRIPTS) + "]+")
+#: "10e9/L", "10*9/L" -- E notation and an asterisk standing in for a caret.
+_EXPONENT_SPELLING = re.compile(r"10\s*[e*^]?\s*(\d{1,2})\s*/")
+
+
 def _normalise(text: str) -> str:
     """Reduce a unit string to a comparison key.
 
-    Both micro signs collapse to ``u``, SI exponent spellings collapse to
-    ``^``, and everything that only affects appearance is dropped. Applied to
-    the alias table as well as to input, so the two cannot drift.
+    Both micro signs collapse to ``u``, ``mcL`` collapses to ``uL``, every
+    exponent spelling collapses to ``10^n``, a trailing result flag is
+    dropped, and everything that only affects appearance goes. Applied to the
+    alias table as well as to input, so the two cannot drift.
     """
-    key = text.strip().lower()
+    key = _RESULT_FLAG.sub("", text.strip())
+    key = _BARE_MARKER.sub("", key).strip().lower()
+
     for micro in ("µ", "μ"):          # MICRO SIGN, GREEK SMALL MU
         key = key.replace(micro, "u")
-    key = key.replace("³", "^3").replace("⁹", "^9")
+    key = key.replace("×", "x")            # MULTIPLICATION SIGN
+
+    key = _SUPERSCRIPT_RUN.sub(
+        lambda m: "^" + "".join(_SUPERSCRIPTS[c] for c in m.group()), key
+    )
     key = key.replace("**", "^").replace("e^", "^")
+    # Normalise every exponent spelling to a caret, including the two-digit
+    # ones: 10^12/L is the SI unit for a red cell count and 10^9/L for a
+    # white cell count, and reports print them as 10e12, 10*12 and 10 12 too.
+    key = _EXPONENT_SPELLING.sub(lambda m: "10^" + m.group(1) + "/", key)
+
     for noise in (" ", "\t", ",", ".", "_", "(", ")", "’"):
         key = key.replace(noise, "")
+
+    # mcL is microlitre. Collapsed here rather than registering every mcL
+    # spelling separately, so the multiplier forms -- "million cells/mcL" --
+    # come along without an entry each. **After** the noise strip, not
+    # before: OCR splits "mcL" as "mc L" often enough that collapsing first
+    # lets the spaced spelling escape.
+    key = key.replace("mcl", "ul")
+
     key = key.replace("x10^", "10^").replace("*10^", "10^")
     return key
 
@@ -151,18 +199,36 @@ _register(
     "cells/uL", "cell/uL", "/uL", "uL^-1",
     "cells/mm3", "cells/mm^3", "/mm3", "/mm^3", "/cumm", "/cu mm", "/cmm",
     "cells per uL", "cells/cumm", "count/uL", "10^0/uL",
+    # Spellings the extraction benchmark found on real report layouts.
+    # mcL is handled in _normalise, so these are the remaining shapes.
+    # A bare "cells" is deliberately absent: it is a count, not a count
+    # concentration, and accepting it would be the module guessing a
+    # denominator it was not told.
+    "cumm", "cmm", "cells/cmm",
 )
 _register(
     THOUSAND_PER_UL,
     "thousand/uL", "thousands/uL", "K/uL", "10^3/uL", "x10^3/uL",
     "10^9/L", "x10^9/L", "K/cumm", "thousand/cumm", "thou/uL", "10e3/uL",
+    "Th/uL", "thsd/uL", "thousand cells/uL", "thousands cells/uL",
 )
 _register(
     MILLION_PER_UL,
     "million/uL", "millions/uL", "M/uL", "mil/uL",
     "10^6/uL", "x10^6/uL", "10^12/L", "x10^12/L", "10e6/uL",
     "million/cumm", "millions/cumm",
+    "mill/uL", "million cells/uL", "millions cells/uL",
 )
+# Giga- and tera-per-litre are the European count spellings, and they are
+# deliberately NOT registered. ``_normalise`` lower-cases before lookup, so
+# "G/L" (a count, 10^9/L) and "g/L" (a mass concentration) collapse onto the
+# same key, and "G/L" currently resolves to grams per litre. Distinguishing
+# them means making the normaliser case-sensitive for one pair of units,
+# which is a safety judgement with an argument on both sides -- a wrongly
+# case-folded haemoglobin and a wrongly case-folded white cell count are
+# different kinds of harm. Left for a human decision rather than settled
+# here. Today the dimension check in ``Quantity.to`` refuses "G/L" for a
+# count analyte, so it fails safe; see docs/extraction-benchmark.md.
 _register(G_PER_DL, "g/dL", "gm/dL", "gms/dL", "gm%", "g%", "gram/dL")
 _register(G_PER_L, "g/L", "gm/L")
 # ng/mL is exactly ug/L -- a nanogram per millilitre is a microgram per litre

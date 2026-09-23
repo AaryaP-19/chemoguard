@@ -195,3 +195,142 @@ missed iron deficiency against over-referral, which is a judgement about
 relative clinical harm. This is a student exercise on public survey data, with
 no clinical validation, no intended-use statement and no care pathway behind it.
 The table is the deliverable; the choice is not.
+
+## What the extraction path actually reads
+
+The models are one half of the application; the other half is the step that
+reads numbers off a photographed report before any model sees them. That step
+had never been measured. It is now, against a purpose-built corpus of 814
+images and 8,140 hand- and generator-labelled fields.
+
+The corpus had to be built rather than collected, and the reason is itself a
+finding about the earlier state of the project. The four report images in the
+repository are near-uniform — clean, high-contrast, English, single-column —
+and both extraction backends score near-perfectly on the kind of thing they
+represent, so measuring against them would have measured nothing. The
+generated strata vary the axes that matter: unit scale (cells/µL, K/µL, SI
+10⁹/L), where the unit is printed (a dedicated column, inside the row label,
+absent entirely), decimal point against decimal comma, and reference ranges
+present or absent — fully crossed, 36 cells × 3 clinical panels. A third
+stratum applies 26 image-quality variants over nine of those cells. Fields
+where the page prints no unit are labelled as such and scored as **correct to
+refuse**, so the metric cannot reward a backend for guessing.
+
+The design decision that made the results interpretable was running a
+**pattern layer** arm: the production regex set fed the exact text the
+generator drew, with no OCR in the loop. That arm is a ceiling rather than a
+performance figure, and the two arms differ in nothing but where the text came
+from — same patterns, same alias table, same canonicalisation, same ground
+truth — so the difference between them is glyph reading and admits no other
+explanation.
+
+## Four defects, three of them invisible without the benchmark
+
+The value parse had no decimal-mark policy. `float(text.replace(",", ""))`
+strips commas and honours points, which is the US convention hard-coded:
+`6.500` read as 6.5 and `0,9` read as 9. Recall across the two decimal styles
+was 0.867 against 0.233. Thirty-two wrong quantities reached the panel, and
+**sixteen of them graded a cytopenia less severe than it is** — a WBC printed
+`0,8`, meaning 800 cells/µL and CTCAE grade 4 leukopenia, read as 8,000 and
+graded 0. The replacement rests on one fact, that a thousands separator is
+always followed by exactly three digits, so a separator followed by one, two
+or four-plus digits can only be a decimal mark; the genuinely ambiguous
+exactly-three case is then settled by evidence from the page itself, and
+refused where the page settles nothing.
+
+The SI unit alternation could not match any SI unit. Interpolating one
+character class inside another produced `[l[uµμ]]+`, which Python parses as a
+class followed by a *required literal* `]`, so the pattern matched `10^9/L]`
+and never `10^9/L`. Two further defects sat in the same expression. Every
+count reported in SI lost its unit, and the loss was entirely in the pattern
+layer: `units.parse_unit` had accepted `10^9/L` and `10^12/L` all along.
+
+The alias table was extended — mcL, superscript and E-notation exponents, a
+trailing result flag — and **not one extraction field changed outcome.** That
+null result is the most useful thing the stage attribution produced. A recall
+of 0.622 beside a list of unrecognised unit spellings reads as a units
+problem, and the obvious fix would have been the wrong one: a field only
+reaches the alias table if a pattern first matched its label *and* captured a
+unit string, and every field the gaps would have touched was already lost
+upstream.
+
+The fourth defect appeared the moment Tesseract was installed, and would have
+invalidated every OCR number in the exercise. Both call sites passed
+`--psm 6`, "assume a single uniform block of text", which a ruled table is
+not. On a pristine render at OCR confidence 91 it returned the two title lines
+perfectly and, for the entire ten-row table, `Cr ee` / `rucr ||| ars`.
+Preprocessing was ruled out before the mode was — denoising, thresholding and
+upscaling each change the result by nothing under psm 6 — and the replacement
+was chosen by measurement across five modes rather than by reading the manual:
+psm 3 at recall 0.419 against psm 6 at 0.022. The sparse-text modes read *more
+characters* and score *worse*, because they do not preserve reading order and
+the patterns need a row's label, value and unit on one line. Had the arm
+simply been run, a one-line configuration default would have been published as
+the difficulty of reading laboratory reports.
+
+## The ceiling, the floor, and one glyph between them
+
+With the patterns fixed, the ceiling is precision 1.000 and recall 0.997: on
+perfect text the extraction logic is essentially complete, and the three
+remaining failures are one real image whose rows are labelled `RBC Count`
+rather than `RBC`. The OCR arm on the same 1,390 fields reaches precision
+0.996 and recall 0.750 — **229 fields the ceiling read correctly and OCR did
+not.** Over the full corpus, including the degraded strata the ceiling cannot
+score, the OCR arm is 0.987 / 0.540.
+
+Most of that gap was one glyph. Tesseract reads the micro sign as `p`,
+returning `cells/pL` where the page prints `cells/µL`, and the per-parameter
+table split accordingly: the four count analytes all print a microlitre
+denominator and scored 0.221–0.305, while the analytes measured in %, fL, pg
+and g/dL scored 0.670–0.779. Accepting `pL` in the denominator and rewriting
+it at the OCR boundary — not in the alias table, since a picolitre is a real
+unit and a misreading is not a spelling — recovered 268 fields and took
+count-analyte recall from 0.228 to 0.353, with ANC nearly tripling from 0.101
+to 0.287. Upscaling the image 2× before OCR addresses the same glyph and
+reaches slightly further, but the two are substitutes rather than
+complements, and upscaling has a cliff one step past its optimum: at 3× recall
+collapses to 0.084 and silent wrong values jump from 3 to 52.
+
+Image quality does not degrade extraction gracefully. It falls off a cliff,
+and the cliffs are not where intuition puts them. JPEG compression is
+survivable to quality 20, a setting that visibly wrecks the image — recall
+0.611 against a pristine 0.778. Half a pixel of additional Gaussian blur takes
+everything: σ0.5 scores 0.844, *above* the pristine control because the blur
+anti-aliases the micro sign, and σ1.0 scores 0.000. Skew degrades steadily to
+4° and dies at 5°. A left-lit shadow is fatal at 0.000 while a diagonal one
+costs little at 0.667, because the left of the page is where the row labels
+are and a pattern that cannot match a label never sights the row at all. See
+[extraction_degradation_curves.png](../reports/figures/extraction_degradation_curves.png).
+
+## The limitation that has no code fix
+
+Every defect above was a code defect with a code fix. The finding that matters
+most is not.
+
+Raising recall raised the count of silent wrong values from 31 to 38, and the
+subset that understates a CTCAE grade from 9 to 13. That is not a regression
+to be netted off against the recall gain — it is the arithmetic of a pipeline
+with no digit check. The fields recovered were previously refused for a *unit*
+problem which was masking a *digit* problem underneath, and letting a field
+through means letting through whatever it says.
+
+The mechanism is a dropped decimal point. OCR reads `0.8` as `08`, which
+parses as 8.0. True 800 cells/µL is grade 4 leukopenia; read as 8,000 it
+grades 0. Every guard in the application passes it, and each for a good
+reason: the unit is read correctly, so the explicit-unit boundary is
+satisfied; there is no separator at all, so the decimal-mark rule has nothing
+to act on; and 8,000 cells/µL is a perfectly normal white cell count, so the
+plausibility bounds accept it — bounds tight enough to catch this would reject
+genuine pathology.
+
+The explicit-unit boundary, which is the single largest piece of remediation
+in this project, guarantees that a value arrives with a **known scale**. It
+does not guarantee that the digits are the ones on the page, and it was never
+capable of that. Catching these requires a second independent read that has to
+agree with the first, a confidence gate that refuses low-confidence fields, or
+an operator confirming the extracted figures against the image. The
+application has none of the three.
+
+So the honest statement of what this extraction path offers is: *it will not
+silently change the scale of a value, and it may silently misread one.* Any
+intended-use statement has to carry the second half as well as the first.

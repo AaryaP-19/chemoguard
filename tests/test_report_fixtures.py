@@ -11,6 +11,7 @@ not require the Tesseract binary; the last test in this file runs the real
 binary when it is present and skips when it is not.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -195,10 +196,20 @@ def test_a_panel_missing_platelets_cannot_be_predicted_from():
 
 # --- the real Tesseract path ------------------------------------------------
 
+#: Honoured here as well as in the production code. ``.env`` configures the
+#: binary through ``TESSERACT_CMD`` and `ocr_extraction` reads it, but this
+#: probe used to check only ``PATH`` -- so on a machine set up the documented
+#: way, with the variable set and the directory not on PATH, the real-OCR
+#: test below skipped silently and had never once run.
+TESSERACT_CMD = os.environ.get("TESSERACT_CMD")
+
+
 def _tesseract_available():
     try:
         import pytesseract
 
+        if TESSERACT_CMD:
+            pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
         pytesseract.get_tesseract_version()
         return True
     except Exception:
@@ -217,9 +228,9 @@ def test_real_ocr_never_returns_a_value_without_a_unit(image):
     """
     from ocr_extraction import HematologyExtractor
 
-    panel, _text, _confidence, skipped = HematologyExtractor().process_file(
-        str(IMAGES / image), image.rsplit(".", 1)[1]
-    )
+    panel, _text, _confidence, skipped = HematologyExtractor(
+        tesseract_cmd=TESSERACT_CMD
+    ).process_file(str(IMAGES / image), image.rsplit(".", 1)[1])
 
     for key, quantity in panel.measured.items():
         assert quantity.unit is not None, key
@@ -228,3 +239,78 @@ def test_real_ocr_never_returns_a_value_without_a_unit(image):
             "MissingUnitError", "UnknownUnitError",
             "IncompatibleUnitsError", "ImplausibleValueError",
         }
+
+
+# --- the page-segmentation mode (CLAUDE.md Finding 9 / M4) ------------------
+
+def test_page_segmentation_mode_is_not_the_single_uniform_block_mode():
+    """psm 6 reads almost nothing off a bordered table.
+
+    "Assume a single uniform block of text" is the wrong assumption for a
+    table with ruled columns: Tesseract runs the rows together across the
+    grid lines. On a pristine, high-contrast generated report at OCR
+    confidence 90 it returned the two title lines perfectly and, for the
+    whole ten-row table, ``Cr ee`` / ``rucr ||| ars``.
+    """
+    from ocr_extraction import HematologyExtractor
+
+    assert HematologyExtractor.PAGE_SEGMENTATION_MODE != 6
+    assert HematologyExtractor.PAGE_SEGMENTATION_MODE == 3
+
+
+def test_the_ocr_config_is_built_in_one_place_and_honours_the_override():
+    """Both call sites read one method, so they cannot drift apart.
+
+    They were two separate ``r'--oem 3 --psm 6'`` literals, one for images
+    and one for PDFs, which is how a mode gets corrected in one path and
+    left wrong in the other.
+    """
+    from ocr_extraction import HematologyExtractor
+
+    assert HematologyExtractor()._ocr_config() == "--oem 3 --psm 3"
+    assert HematologyExtractor(psm=6)._ocr_config() == "--oem 3 --psm 6"
+
+
+@pytest.mark.skipif(not _tesseract_available(), reason="Tesseract binary not installed")
+def test_psm_6_really_does_fail_on_a_ruled_table(tmp_path):
+    """The evidence for M4, pinned rather than asserted in a comment.
+
+    Run against a freshly rendered pristine table rather than against
+    ``test1.jpg``, because that is where the difference was measured.
+    ``test1.jpg`` is a 511-pixel-wide JPEG photograph and OCRs poorly at
+    every mode -- it reads "145" for 14.5 and "Mey" for MCV even at psm 3 --
+    so it cannot isolate the segmentation mode from its own resolution.
+
+    A crisp, high-contrast render can: psm 3 recovers every value and psm 6
+    recovers none. If a future preprocessing change makes psm 6 viable this
+    fails, which is the point of pinning it.
+    """
+    pytest.importorskip("PIL")
+
+    from chemoguard.extraction_bench.panels import PANELS
+    from chemoguard.extraction_bench.render import COLUMN, POINT, PageSpec, render
+    from ocr_extraction import HematologyExtractor
+
+    page = render(
+        PageSpec(
+            panel=PANELS["normal"],
+            scale="conventional_cells",
+            placement=COLUMN,
+            decimal_style=POINT,
+            reference_ranges=True,
+        )
+    )
+    path = tmp_path / "page.png"
+    page.image.save(path, "PNG")
+
+    def values_found(psm):
+        text, _confidence = HematologyExtractor(
+            tesseract_cmd=TESSERACT_CMD, psm=psm
+        ).extract_text_from_image(str(path))
+        return sum(
+            printed in text
+            for printed in ("14.2", "4.80", "6,500", "250,000", "88.0", "29.5")
+        )
+
+    assert values_found(3) == 6
+    assert values_found(6) == 0

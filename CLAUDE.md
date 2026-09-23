@@ -7,6 +7,12 @@ output as a validated diagnosis.
 The ML core is being rebuilt. The findings below were independently verified
 against the repo and datasets; treat them as established.
 
+**Read *Standing limitation* before describing what this application
+guarantees.** The explicit-unit boundary prevents a value's *scale* from being
+changed silently. It does not make the extracted digits correct, and a dropped
+decimal point still produces a plausible in-range value that every guard
+accepts. That one is not fixable in code.
+
 ---
 
 ## Finding 1 — the labels are threshold rules over the training features
@@ -1004,6 +1010,407 @@ positioned to make it** — it is a student exercise on public survey data,
 with no clinical validation, no intended-use statement and no care pathway
 behind it. The table is the deliverable; the choice is not.
 
+## Finding 9 — the extraction benchmark, and what it measured
+
+Landed 2026-09-22. `chemoguard/extraction_bench/`,
+`scripts/build_extraction_corpus.py`, `scripts/run_extraction_bench.py`,
+`docs/extraction-benchmark.md`. 162 tests across
+`tests/test_extraction_bench.py` (the harness and the scorer),
+`tests/test_number_parsing.py` (M1's separator rule and M2's SI units) and
+`tests/test_report_fixtures.py` (the real OCR path, including M4's mode).
+
+**Scoped as a characterisation of the regex path plus real OCR, not a
+backend comparison.**
+The GPT-4o-mini arm is deferred by decision: the adapter, its response cache
+and its parsing are complete in `backends.py` and guarded by two independent
+switches, because every uncached image is a billable request against the key
+in `.env`. **The Tesseract arm ran 2026-09-22**, once the binary was
+installed; see *The OCR arm* below. Two arms therefore carry numbers: the
+**pattern layer**, the production regex set over the exact text the generator
+drew with no OCR in the loop — which is a *ceiling*, not a performance figure
+— and the **OCR arm**, the real production path. The difference between them
+is glyph reading and nothing else, which is the measurement the whole design
+was for.
+
+### The corpus
+
+814 images, 8,140 fields. Deterministic, gitignored, regenerable in 29s.
+
+| Stratum | Images | Fields | extractable | no_unit | absent |
+|---|---|---|---|---|---|
+| A — the four real images, hand-labelled | 4 | 40 | 29 | 4 | 7 |
+| B — notation cross, pristine renders | 108 | 1080 | 720 | 360 | 0 |
+| C — degradation over a fixed notation subset | 702 | 7020 | 4554 | 2412 | 54 |
+
+Stratum B is fully crossed over unit scale (cells/uL, K/uL, SI) × unit
+placement (column, in the label, absent) × decimal mark (point, comma) ×
+reference ranges (present, absent) × 3 panels, so every axis level carries
+36–54 images and no per-level comparison is confounded. Stratum C pins the
+decimal mark and reference ranges and varies 26 quality variants over all
+nine scale-by-placement cells.
+
+`no_unit` fields are the point of the design: the page prints a value and no
+unit, **refusing is correct**, and any number emitted is a guess. They can
+only score TN or FP, never TP. A metric that scored them otherwise would
+punish the behaviour Findings 3, 4 and 7 exist to establish.
+
+### Four defects, each confirmed against the module
+
+**M1 — the value parse had no decimal-mark policy. Fixed 2026-09-22.**
+`_NUMBER` was `(?P<value>\d[\d,]*\.?\d*)` finished with
+`float(text.replace(",", ""))`: commas stripped, points honoured — the US
+convention hard-coded. `6.500` became 6.5 and `0,9` became 9. Recall across
+the two decimal styles was **0.867 → 0.233** and precision **1.000 → 0.724**.
+
+Most failed safe on the `cbc.ANALYTES` bounds. **32 did not, and 16 of those
+understated a CTCAE grade.** A WBC printed `0,8` — 800 cells/uL, grade 4
+leukopenia — read as 8,000 and graded 0. An ANC printed `0,2` read as 2,000
+and graded 0. Finding 4's signature through a new route: not magnitude
+inference, a separator strip, and pointing the same way — critical to normal.
+
+The fix rests on one fact: **a thousands separator is always followed by
+exactly three digits.** So the token shape settles most cases with no
+context: no separator is an integer; a separator followed by one, two, or
+four-plus digits can only be a decimal mark; two different separators mean
+the last is the decimal mark; one separator repeated can only be grouping,
+because a number has one decimal mark. Only *separator plus exactly three
+digits* is genuinely ambiguous.
+
+That alone resolves all four understating cases deterministically — `0,9`,
+`0,8`, `0,2` and `2,0` each have one digit after the separator. A
+**document-level second pass** then recovers the rest: a page printing `13.0`
+anywhere has shown `.` is its decimal mark and therefore `,` groups its
+thousands throughout, so `6,500` resolves from the page's own evidence rather
+than from a convention we picked. Contradictory evidence yields no inference
+rather than a majority vote. What nothing settles is refused with the printed
+token attached — `cbc.AmbiguousNumberError`, the same stance this codebase
+takes on a missing unit. `tests/test_number_parsing.py`.
+
+**M2 — the SI unit alternation could not match any SI unit. Fixed
+2026-09-22.** `_U_COUNT` built `r'10\^?[369]\s*/\s*[l{0}]+'.format(_MU)` with
+`_MU = r'[uµμ]'`. Interpolating a character class inside another gives
+`[l[uµμ]]+`, which Python parses as the class `[l[uµμ]` plus a **required
+literal `]`**. So `10^9/L]` matched and `10^9/L` did not. Two further defects
+in the same expression: `[369]` is one digit, so `10^12/L` — the SI unit for a
+red cell count — could not match even with the brackets fixed; and `10\^?`
+made the caret optional, so `109/L` matched and was read as an SI unit.
+
+Every count reported in SI lost its unit. It failed safe, and the loss was
+**entirely** in the pattern layer: `units.parse_unit` had accepted `10^9/L`
+and `10^12/L` all along. SI recall was 0.450 against 0.617 for cells/uL.
+
+The fix splits the micro characters into a bare list so no class is nested,
+allows `(?:12|0|3|6|9)` as the exponent, and **requires** an exponent marker —
+a caret, `e`, `*`, or a run of superscript digits, which are self-marking. One
+case is deliberately given up: OCR flattening a superscript turns `10⁹/L` into
+`109/L`, now a refusal. That is the right way round — `109` is a possible
+printed value, so the old match was never safe, and a refusal is recoverable
+where a wrong scale is not.
+
+**M3 — three gaps stack on `test_4.png`. Open.** Its rows read `RBC Count`,
+`WBC Count`, `Platelet Count`, with units `million cells/mcL`, `cells/mcL`,
+`/mcL`. Three of four fields are lost at the *first* of three independent
+gaps: no `"<abbrev> Count"` label form in `_ANALYTE_LABELS`; then no `mcL` in
+`_U_COUNT`; then no `mcL` in the alias table, which is now closed. Fixing gap
+1 alone turns them into refusals rather than values. **These three fields are
+the only remaining losses in the whole pass.**
+
+**M4 — the page-segmentation mode read almost nothing off a table. Fixed
+2026-09-22.** Found the moment Tesseract was installed, and it would have
+made every OCR number in this benchmark meaningless. Both OCR call sites
+passed `--oem 3 --psm 6`. **psm 6 means "assume a single uniform block of
+text"**, which a ruled table is not: Tesseract runs the rows together across
+the grid lines. On a pristine, high-contrast generated report at OCR
+confidence 90 it returned the two title lines perfectly and, for the entire
+ten-row table, `Cr ee` / `rucr ||| ars`.
+
+Preprocessing was ruled out before the mode was. Denoising, Otsu thresholding
+and 2× upscaling each change the result by nothing under psm 6, and every
+other mode reads 8/8 values with or without them. The mode was the whole
+cause.
+
+Replacement chosen by measurement over 24 images spanning the clean control
+and the worst level of every degradation family, scored end to end:
+
+| psm | Meaning | Precision | Recall |
+|---|---|---|---|
+| **3** | fully automatic (**chosen**) | 0.987 | 0.419 |
+| 4 | single column, variable sizes | 0.974 | 0.425 |
+| 11 | sparse text | 1.000 | 0.229 |
+| 12 | sparse text with OSD | 0.977 | 0.235 |
+| 6 | single uniform block (**as shipped**) | 1.000 | 0.022 |
+
+psm 3 over 4 on precision and on silent errors, the trade this application
+makes everywhere else. Note that the sparse-text modes read *more characters*
+and score *worse*: they do not preserve reading order, and the patterns need a
+row's label, value and unit on one line. Glyph accuracy is not the objective;
+field recovery is.
+
+`PAGE_SEGMENTATION_MODE` is now a named constant carrying that table, and both
+call sites read one `_ocr_config()` — they were two separate
+`r'--oem 3 --psm 6'` literals, which is how a mode gets corrected in the image
+path and left wrong in the PDF path.
+
+Worth recording how close this came to being invisible. The arm would have
+run, produced a number, and that number would have been attributed to glyph
+reading — which is precisely the inference the benchmark was asked to make. A
+one-line configuration default would have been published as the difficulty of
+reading laboratory reports.
+
+**Also fixed: the real-OCR test had never run.** `test_report_fixtures.py`
+gated its Tesseract test on `pytesseract.get_tesseract_version()` without
+setting `tesseract_cmd`, so it checked `PATH` only. `.env` configures the
+binary through `TESSERACT_CMD` and the production code reads it — so on a
+machine set up the documented way the test skipped silently and had never once
+executed. It now honours the variable, runs, and passes.
+
+### Three runs, and what each fix moved
+
+Identical corpus, identical ground truth; only the production code changed.
+
+| | 1. As found | 2. After the alias fix | 3. After M1 + M2 |
+|---|---|---|---|
+| Precision | 0.948 | 0.948 | **1.000** |
+| Recall | 0.622 | 0.622 | **0.997** |
+| TP / FP / FN | 578 / 32 / 351 | 578 / 32 / 351 | **926 / 0 / 3** |
+| Silent wrong values | 32 | 32 | **0** |
+| of which understate severity | 16 | 16 | **0** |
+| Alias spellings accepted (of 48) | 28 | 43 | 43 |
+| Fields whose outcome changed | — | **0** | +348 recovered |
+
+**The alias fix moved nothing.** Fifteen more spellings parsed and not one
+extraction field changed outcome; `alias_gap` was charged zero times in both
+runs. A field only reaches `parse_unit` if a pattern matched its label *and*
+captured a unit string, so every field the gaps would have touched was already
+lost upstream. The alias table was never the binding constraint.
+
+That is the case for stage attribution over a headline number. Recall 0.622
+with a list of unrecognised unit spellings beside it reads as a units problem,
+and the obvious fix is the wrong one. The fix was right to make — the gaps are
+real and on the checked-in images — but it recovers nothing alone.
+
+**M1 and M2 moved everything left.** Both are refusal-preserving: neither
+invents a reading. But every number in that table is a **ceiling**, measured
+on perfect text. The OCR arm reaches 0.750 on the fields it shares with the
+ceiling — see *The OCR arm* below, where a lost decimal point puts the silent
+errors back.
+
+`G/L` and `T/L` are left unregistered deliberately. `_normalise` lower-cases,
+so `G/L` (a count, 10^9/L) collapses onto `g/L` (a mass concentration).
+Separating them needs a case-sensitive exception for one pair of units, and a
+wrongly case-folded haemoglobin and a wrongly case-folded white-cell count are
+different kinds of harm. Today the dimension check in `Quantity.to` refuses
+`G/L` for a count analyte, so it fails safe — at the cost of an error message
+naming the wrong reason. A judgement for a person, not for a benchmark.
+
+### The OCR arm — run 2026-09-22, and the gap is glyph reading
+
+Tesseract 5.5.3 installed. Three arms over the same corpus and truth. ~13 min
+of compute per OCR arm for 814 images.
+
+| | Pattern (ceiling) | Tesseract psm 3 | Tesseract psm 6 (as shipped) |
+|---|---|---|---|
+| Stratum A — real images | 1.000 / 0.897 | 1.000 / **0.172** | 1.000 / 0.138 |
+| Stratum B — notation cross | 1.000 / 1.000 | 0.995 / 0.767 | n/a / **0.000** |
+| Stratum C — degradation | 1.000 / 1.000 | 0.985 / 0.506 | 1.000 / 0.004 |
+| Pooled, all 8,140 fields | — | 0.987 / 0.540 | — |
+| Silent wrong values | 0 | **38** | 0 |
+| of which understate severity | 0 | **13** | 0 |
+
+Precision / recall; the psm 3 column is after the `pL` fix below. Over the
+1,390 fields both the ceiling and the OCR arm scored, the gap is recall 0.997
+→ 0.750: **229 fields the ceiling read correctly and OCR did not.** Three were
+lost by both and belong to M3. None went the other way. Nothing differs
+between those two arms but where the text came from, so the gap is glyph
+reading and nothing else.
+
+**Stratum A is the worst, at 0.172.** The only non-synthetic images in the
+corpus are the hardest thing in it — they are 511-pixel-wide JPEGs, and
+resolution is the binding constraint. Generated pristine renders are not a
+proxy for a photographed report.
+
+#### One glyph explained most of it: `µ` reads as `p`
+
+From the OCR text of a pristine render at confidence 91:
+
+    Absolute Neutrophil Count (ANC) 3,900 cells/pL 1,500 - 8,000
+                                          ^^^^^^^^ the page prints cells/µL
+
+`cells/pL` did not match `_U_COUNT`, so the unit was dropped and the field
+refused. Every count analyte prints a microlitre denominator and no other
+analyte does, which was the entire per-parameter pattern — the counts scored
+0.221–0.305 against 0.670–0.779 for everything else.
+
+**Fixed 2026-09-22.** `pL` is accepted in the microlitre denominator and
+rewritten to `uL` at the OCR boundary, *not* registered in `units.py`: a
+picolitre is a real unit and `cells/pL` is a misreading rather than a
+spelling, and a corruption admitted to the alias table would then be accepted
+from the keyboard and from the REST API, where there is no OCR to blame. The
+rewrite is scoped to a denominator following a slash, because a blanket
+`p`-for-`u` would turn picograms into micrograms and corrupt every MCH. There
+is no ambiguity cost: a picolitre is a millionth of a microlitre, so no
+laboratory reports a cell count per picolitre.
+
+Measured on the full 814:
+
+| | Before | After |
+|---|---|---|
+| Stratum B | 0.994 / 0.689 | 0.995 / **0.767** |
+| Stratum C | 0.987 / 0.460 | 0.985 / **0.506** |
+| Pooled | 0.988 / 0.489 | 0.987 / **0.540** |
+| Count-analyte recall | 0.228 | **0.353** |
+| — ANC | 0.101 | **0.287** |
+| `unit_dropped` losses | 877 | 695 |
+| Silent wrong values | 31 | **38** |
+| — understating severity | 9 | **13** |
+
+**268 fields recovered, and silent wrong values up by 7.** That second half is
+not a side effect to bury. The recovered fields were previously refused for a
+*unit* problem that was masking a *digit* problem underneath; raising recall
+on a pipeline with no digit check necessarily raises the count of plausible
+wrong answers. See *Standing limitation*.
+
+#### Against the upscaling lever — substitutes, not complements
+
+Same stratified 40-image sample, end to end:
+
+| | Recall | Count-analyte recall | Silent |
+|---|---|---|---|
+| 1× , no `pL` rule | 0.587 | 0.266 | 3 |
+| **1× + `pL` rule** | **0.674** | **0.481** | 3 |
+| 2× , no `pL` rule | 0.697 | 0.571 | 1 |
+| 2× + `pL` rule | 0.697 | 0.571 | 1 |
+
+2× with the rule is identical to 2× without it: upscaling already cuts the
+`/pL` misreads from 53 to 7 and leaves the rule nothing to do. **Applying both
+buys nothing over either.**
+
+The pattern rule takes most of the gain for no image processing, no runtime
+cost and no proximity to the 3× cliff, where recall collapses to 0.084 and
+silent errors jump to 52. Upscaling still edges ahead, so the rule is **not
+strictly better** — it is cheaper and safer for most of it. Taking the last
+~0.09 of count-analyte recall means accepting a preprocessing parameter with a
+cliff one step past its optimum, which is an operational-risk judgement, not a
+measurement. **Not applied.**
+
+Next glyph in the same sample: `µ` read as `y`, 24 occurrences of `/yL` against
+53 of `/pL`. Not handled, deliberately — the `p` rule was scoped to one glyph
+so its effect could be attributed, and a second in the same change would have
+made both unmeasurable.
+
+#### Degradation is cliff-shaped, not gradual
+
+| Family | Worst level still above half the control | First below | Floor |
+|---|---|---|---|
+| jpeg | q20 (0.611) | never | 0.611 |
+| skew | 4° (0.417) | 5° (0.000) | 0.000 |
+| blur | σ0.5 (0.844) | σ1.0 (0.000) | 0.000 |
+| contrast | moderate (0.778) | severe (0.222) | 0.222 |
+| shadow | diagonal (0.667) | left (0.000) | 0.000 |
+| crop | last two rows | never | — |
+
+Pristine control 0.778. JPEG to quality 20 — visibly wrecked to a human eye —
+costs little. Half a pixel of blur past σ0.5 costs everything. Anyone tuning
+this pipeline on the assumption of graceful degradation would tune the wrong
+axis.
+
+Two anomalies, named rather than smoothed over. **Blur σ0.5 scores above the
+pristine control** (0.844 vs 0.778): a half-pixel blur anti-aliases the micro
+sign and helps — the same resolution story as the upscaling probe. And the
+**left-lit shadow is fatal while diagonal and corner are not**, because the
+left of the page is where the row labels are; darken those and no pattern
+matches, so the row is never sighted.
+
+### The benchmark had a ground-truth bug, and it looked like a finding
+
+Recorded because it is the third time in this repo that a symptom has pointed
+at the wrong cause, and because of what it nearly published.
+
+The first OCR run reported nine fields where the backend appeared to **invent
+a unit** on a page that printed none — under a crop, which is exactly where a
+model under duress might be expected to guess. That reads as a dangerous
+hallucination and would have been reported as one.
+
+It was not. `test1.jpg` and the generated column layouts both print
+`Neutrophils %` in the row label *and* `%` in the units column — real reports
+duplicate it. `corpus.truth_from_render` asked whether the unit *column* had
+been clipped, not whether the unit was still readable **anywhere**, so a crop
+that took the column marked the field `no_unit`. The unit was still there, in
+the label. Tesseract read it correctly and was scored as a false positive for
+doing so.
+
+All nine were mine. Fixed by testing for the unit's survival rather than its
+column's, with a regression test naming the case.
+
+The general lesson, which is the same one as the `debug=True` and
+`UnicodeEncodeError` entries under *Fixes that look done and aren't*: **a
+benchmark's own defects present as findings about the thing under test**, and
+they present as the *interesting* kind. The safeguard that caught this was
+per-field attribution — nine identical failures, all on one analyte, all
+under one crop variant, is not what a hallucination looks like. A pooled
+accuracy would have hidden it completely.
+
+### Ground truth records meaning, not parseability
+
+A field's label says what the printed unit *denotes* — `cells/mcL` denotes
+`cells/uL`, because mcL is a microlitre — independent of what the alias table
+accepts. That is the property that made three-way comparison possible at all:
+the same manifest scored every run.
+
+## Standing limitation — the unit boundary does not guarantee correct digits
+
+**This is a limitation of the product, not a finding about a benchmark run,
+and it is the first critical→normal defect in this project that cannot be
+fixed in code.** Findings 3, 4 and 7 were all code defects with code fixes:
+magnitude inference, a `÷1000` with no column rename, unit conventions
+inferred at fit time. This one is not.
+
+`units.py` and `cbc.py` guarantee that a value arrives with a **known scale**.
+They do not, and cannot, guarantee that the digits are the ones printed on the
+page.
+
+A dropped decimal point is the clearest case. OCR reads `0.8` as `08`:
+
+    White Blood Cells (K/uL) 08        ← the page printed "0.8"
+
+`parse_number("08")` is 8.0. True 800 cells/uL is CTCAE grade 4 leukopenia;
+read as 8,000 cells/uL it grades **0**. Every existing guard passes it, and
+each one passes it for a good reason:
+
+- the **unit** is read correctly, so the explicit-unit boundary is satisfied —
+  there is nothing missing or unrecognised to refuse;
+- there is **no separator at all**, so the decimal-mark rule (Finding 9 / M1)
+  has nothing to act on — `08` is an unambiguous integer to any parser;
+- 8,000 cells/uL is a **perfectly normal WBC**, so the `cbc.ANALYTES`
+  plausibility bounds accept it. Those bounds are deliberately wide enough to
+  admit real pathology — hyperleukocytosis reaches 500,000 — and a bound tight
+  enough to catch this would reject genuine readings.
+
+The direction is the one that matters: a lost decimal point reads *high*, and
+for a cytopenia high means normal. Measured on the 2026-09-22 OCR run: 38
+silent wrong values, 13 of them understating a CTCAE grade, several of those
+turning a grade 3 or 4 cytopenia into a grade 0.
+
+**What would actually catch it**, none of which exists here:
+
+1. a **second independent read** that has to agree with the first (two OCR
+   engines, or OCR against a vision model) — disagreement becomes a refusal;
+2. a **confidence gate** that refuses a field whose per-character OCR
+   confidence is below a threshold, rather than accepting whatever came back;
+3. **operator confirmation** of the extracted figures against the image before
+   a prediction is made.
+
+Until one of those exists, the honest statement of what this application
+offers is: *it will not silently change the scale of a value, and it may
+silently misread one.* Any intended-use statement, any label, and any
+conversation with a reviewer has to say the second half as well as the first.
+
+The three mitigations are ranked by cost, not by preference; (3) is the only
+one that needs no new machinery and is the one an assistive tool should
+arguably have had from the start. Choosing between them is a clinical-safety
+judgement about workflow, not an engineering call — see *Contacts* in the
+governance policy rather than settling it in a commit.
+
 ## Direction
 
 Keep the app layer — auth, DB schema, both extraction backends, PDF export,
@@ -1027,7 +1434,17 @@ Open before anything ships, in order:
 2. **The under-5 band needs cases, not features.** 37 cases give an interval
    6× wider than the adult band's, and the age-normalised MCV feature moved
    it −0.012. Report the band separately or scope the model above it.
-3. Extraction benchmark (Tesseract vs GPT-4o-mini), still untouched.
+3. ~~Extraction benchmark (Tesseract vs GPT-4o-mini), still untouched.~~
+   Landed 2026-09-22. Pattern-layer ceiling **and** the real OCR arm; the
+   GPT-4o-mini arm stays deferred by decision, adapter built and guarded. See
+   *Finding 9* and `docs/extraction-benchmark.md`. Four defects found: M1, M2
+   and M4 fixed, M3 open in *Known issues*. The headline is that the ceiling
+   is now 0.997 and OCR reaches 0.750 on shared fields, so **the image is the
+   binding constraint, not the patterns** — and that glyph errors reintroduce
+   silent wrong values the unit boundary cannot catch. Next on it: decide
+   whether to take the 2× upscale (measured on 40 images, needs a full run),
+   and the deferred axes — table layout, non-English labels, `value_cell`
+   placement.
 
 Units come before data ingestion deliberately. Finding 3 shows implicit units
 are already a source of silent corruption; the NHANES loader should be written
@@ -1049,14 +1466,25 @@ against an explicit-unit boundary rather than retrofitted afterwards.
   class is 44% at the default and the class is 13.5% of the cohort); decide
   whether to pool the two cycles or restrict to 2017–2020, which is the only
   one with a representative ferritin sample; then the extraction benchmark.
-- Second ML contribution: benchmark the two extraction backends (Tesseract vs
-  GPT-4o-mini vision) per field on real report layouts.
+- ~~Second ML contribution: benchmark the two extraction backends (Tesseract
+  vs GPT-4o-mini vision) per field on real report layouts.~~ Landed
+  2026-09-22, scoped to the regex path. Next on it, in order: install
+  Tesseract and run the OCR arm (the corpus and scorer are ready and the
+  arm is one command); decide the decimal-comma policy in *Known issues*;
+  then the deferred axes — table layout, non-English labels, and the
+  `value_cell` unit placement, which is implemented and unmeasured.
 
 ## Hard rules
 
 - **No bare numbers past the extraction boundary.** A value without a unit is
   a bug. No magnitude-based inference anywhere — `if value > 1000: value /=
   1000` is the exact pattern that produces Finding 4.
+
+  **This rule is about scale, and scale only.** It does not and cannot make a
+  value correct — see *Standing limitation* above, where a dropped decimal
+  point produces a plausible in-range number that satisfies every guard in
+  this list. Do not cite the explicit-unit boundary as evidence that extracted
+  figures are right.
 - **Every model change ships with the depth-3 leakage test, scored on AUC.**
   If a 3-level tree comes within **0.02 AUC** of the ensemble, the label is a
   rule, not a target. `training.LEAKAGE_AUC_MARGIN`.
@@ -1165,6 +1593,15 @@ the mechanism, not the message.
   the app; a warning does not. The anemia model appears to work while
   scikit-learn itself states its results may be invalid — silent-wrong, the
   same shape as Findings 4 and 7. "It loaded" is not "it is correct".
+- **`ocr_extraction._ANALYTE_LABELS` — no `"<abbrev> Count"` row form.**
+  Finding 9 / M3. `RBC Count`, `WBC Count` and `Platelet Count` match no
+  pattern at all, so three of `test_4.png`'s four fields are never sighted.
+  Note the order of the gaps: fixing this alone turns them into refusals
+  rather than values, because `mcL` is missing from `_U_COUNT` too. These
+  three fields are the only remaining losses in the whole benchmark pass.
+
+  **M1 and M2 were fixed 2026-09-22** and are no longer listed here; see
+  Finding 9 for what each was and what the fix moved.
 - Dead scaler code path — no scaler files were ever written.
 - ~~Missing models are handled two different ways~~ — resolved 2026-09-21.
   `initialize_models()` warned and continued on import while the `__main__`

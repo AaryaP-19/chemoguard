@@ -41,6 +41,23 @@ from units import (
 )
 
 
+class AmbiguousNumberError(ValueError):
+    """A printed number's separators do not determine its value.
+
+    Distinct from a unit error and from an implausible one: the unit may be
+    perfectly readable and the number still undecidable. ``1,234`` is 1234 on
+    a US page and 1.234 on a European one, and no amount of context inside
+    the row settles it.
+
+    Refused rather than resolved by convention, for the same reason a missing
+    unit is refused. Picking one reading gets it right on half the world's
+    reports and silently wrong on the other half, and the wrong half points
+    the same way every time -- see CLAUDE.md Finding 9 / M1, where an ANC
+    printed 0,2 read as 2,000 and graded a life-threatening neutropenia as
+    normal.
+    """
+
+
 class ImplausibleValueError(ValueError):
     """A canonicalised value lies outside physiological possibility.
 
@@ -256,6 +273,26 @@ def panel_from_extraction(raw: dict, unit_source: str = "report"):
 
         value = entry.get("value") if isinstance(entry, dict) else entry
         unit = entry.get("unit") if isinstance(entry, dict) else None
+
+        # A number the extractor sighted but could not pin down. Surfaced as
+        # a refusal rather than dropped: silence would leave the operator
+        # unable to tell "the report has no platelet count" from "the count
+        # is printed and I could not tell 250,000 from 250.000", and only the
+        # second is something they can resolve.
+        if isinstance(entry, dict) and entry.get("ambiguous_number") is not None:
+            skipped[key] = {
+                "value": None,
+                "unit": unit,
+                "printed": entry["ambiguous_number"],
+                "reason": "AmbiguousNumberError",
+                "detail": entry.get("detail")
+                or "{0} was printed as {1!r}, whose separators do not "
+                   "determine its value.".format(
+                       ANALYTES[key].label, entry["ambiguous_number"]
+                   ),
+            }
+            continue
+
         if value is None:
             continue
 
