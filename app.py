@@ -469,8 +469,16 @@ def health():
 
 
 @app.route('/reload_models', methods=['POST'])
+@login_required
 def reload_models():
-    """Reload models endpoint."""
+    """Reload every model artefact from disk.
+
+    Authenticated because it mutates process state. CSRF protection alone was
+    not access control here: any anonymous client that fetches ``/`` is handed
+    a token, so the endpoint was reachable by anyone who asked for one. It was
+    low-impact only while ``models/`` stayed empty, which stops being true the
+    moment the NHANES artefacts land.
+    """
     try:
         load_models()
         return jsonify({

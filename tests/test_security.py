@@ -1,4 +1,4 @@
-"""Regression tests for the three security fixes.
+"""Regression tests for the security fixes.
 
 Each of these failed before the fix and would fail again if it regressed.
 """
@@ -85,3 +85,18 @@ def test_anonymous_upload_writes_nothing_to_disk(flask_app, client, csrf_token):
     )
 
     assert set(os.listdir(upload_dir)) == before
+
+
+# --- /reload_models authentication ------------------------------------------
+
+def test_anonymous_reload_models_is_refused(client, csrf_token):
+    """A CSRF token is not access control on this route.
+
+    The token is handed to anyone who fetches ``/``, so before
+    ``@login_required`` an anonymous client could reload every artefact from
+    disk simply by asking for one first. Sending a valid token here is the
+    point of the test, not an oversight.
+    """
+    response = client.post("/reload_models", headers={"X-CSRFToken": csrf_token})
+
+    assert response.status_code in (401, 302)
