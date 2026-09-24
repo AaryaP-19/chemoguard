@@ -195,7 +195,9 @@ script would have to infer it.
 
 Regression coverage in `tests/test_units.py`, `tests/test_api_units.py`,
 `tests/test_prediction_path.py` and `tests/test_report_fixtures.py`. The
-whole suite is 116 tests, 3 of which skip without the Tesseract binary. The
+whole suite is 116 tests, 3 of which skip without the Tesseract binary.
+*(116 is as of 2026-09-21. The suite is 378 tests as of 2026-09-24, and with
+Tesseract installed nothing skips — see *Environment* in `CLAUDE.md`.)* The
 load-bearing one asserts that 900 cells/µL and 900 thousand/µL return
 *different* risks through the same estimator — under magnitude inference
 they produced an identical feature value, so it could not have passed.
@@ -1667,13 +1669,23 @@ so the record of what was wrong survives the fix. Each carries how it was
 verified, because "it was fixed in commit X" is a claim about a commit
 message and not about the repo.
 
-**Swept 2026-09-24** against the working tree at `3c3dce5`. Verification for
-this sweep was a static read of the live code, not a test run: the bundled
-`venv/` was deleted (see *Environment*) and no interpreter on this machine
-currently has the dependencies, so `tests/test_security.py` could not be
-executed here. The code reads below are conclusive on their own — a decorator
-is either on the route or it is not — but they are a weaker check than a
-passing suite, and the distinction is recorded rather than glossed.
+**Swept 2026-09-24** against the working tree at `3c3dce5`.
+
+~~Verification for this sweep was a static read of the live code, not a test
+run.~~ **Caveat resolved 2026-09-24.** The sweep was originally recorded as
+static-only, because the bundled `venv/` had been deleted and no interpreter on
+the machine carried the dependencies, so `tests/test_security.py` could not be
+executed. A fresh `.venv` was then built from `requirements.txt` and the suite
+run: **378 passed, 17 warnings, 0 skipped** on Python 3.12.10, including all 8
+security tests and the `/reload_models` regression test added with the fix. The
+code reads below now have a passing suite behind them. Steps are in
+*Environment* in `CLAUDE.md`.
+
+Keeping the original wording struck through rather than deleting it, because
+the distinction it drew is the right one: a decorator is either on a route or
+it is not, so the reads were conclusive about *that* — but conclusive about one
+line is not the same as a green suite, and the gap was worth naming while it
+was open rather than discovering later that nobody had checked.
 
 ### Fixed in `c63afc1` — the debug server
 

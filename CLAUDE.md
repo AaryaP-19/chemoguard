@@ -220,6 +220,15 @@ fix.
   (Finding 5), so the script raises `FileNotFoundError`. *(Was `:43-45`; the file
   grew when `SOURCE_UNITS` replaced the inference sites.)* Expected — it gets
   rewritten against NHANES, not patched.
+- **`app.py:72` uses the legacy `Query.get()`** — cosmetic, **not** being fixed
+  now. `User.query.get(int(user_id))` in the Flask-Login user loader raises
+  SQLAlchemy's `LegacyAPIWarning`; `db.session.get(User, int(user_id))` is the
+  2.0 spelling. It is the **only one of the suite's 17 warnings that comes from
+  our code** — the rest are in sqlalchemy, reportlab and flask_login. Behaviour
+  is identical and nothing is deprecated out from under us on the pinned
+  versions, so this is noise, not risk. Recorded so the warning is recognised
+  rather than re-investigated, and so it does not hide a future warning that
+  does matter.
 - **`ocr_extraction._ANALYTE_LABELS` — no `"<abbrev> Count"` row form.** Finding
   9 / M3. `RBC Count`, `WBC Count` and `Platelet Count` match no pattern at all,
   so three of `test_4.png`'s four fields are never sighted. Note the order of the
@@ -275,8 +284,23 @@ decision has not yet been exercised against a working model.
 ## Environment
 
 The bundled `venv/` was a macOS venv (`/Users/sulamba/...`, 280 MB) and has been
-deleted. **No interpreter on this machine currently has the dependencies
-installed**, so the test suite cannot run without setting one up first.
+deleted. There is no checked-in environment, so build one before running
+anything:
+
+```
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pytest -q
+```
+
+**378 passed, 17 warnings, 0 skipped** on Python 3.12.10, 2026-09-24 —
+`pip check` clean, all 8 security tests passing. `.venv/` is gitignored.
+Nothing skipped because Tesseract is installed here; three OCR tests skip
+without it, and `.env` points at the binary via `TESSERACT_CMD`.
+
+Of the 17 warnings **exactly one is ours** — `app.py:72`, in *Known issues*.
+The other three sites are in dependencies: `sqlalchemy/sql/schema.py`,
+`reportlab/lib/rl_safe_eval.py` and `flask_login/login_manager.py`.
 
 `requirements.txt` is fully pinned and **targets Python 3.12**, both floor and
 ceiling: the old `Werkzeug==2.2.3` calls `ast.Str`, removed in 3.12, while
@@ -287,12 +311,10 @@ built against, and pandas then fails at import. scikit-learn is pinned at 1.3.2
 because that is the version that wrote the quarantined pickles — **the pin now
 protects nothing** and is free to move once the NHANES models land.
 
-Verified on Python 3.12.10 (2026-09-21, before the venv was removed): clean
-install, `pip check` clean, `import app` succeeds. `chemoguard/data` needs pandas
-and nothing else, and its output is identical on pandas 2.1.4 and 3.0.6 — but
-`tests/conftest.py` imports `app` at module scope, so the whole suite,
-`test_coherence.py` included, fails at collection without Flask. Three OCR tests
-skip without the Tesseract binary, which `.env` configures via `TESSERACT_CMD`.
+`chemoguard/data` needs pandas and nothing else, and its output is identical on
+pandas 2.1.4 and 3.0.6 — but `tests/conftest.py` imports `app` at module scope,
+so the whole suite, `test_coherence.py` included, fails at collection without
+Flask. Install everything; there is no pandas-only subset to run.
 
 ---
 
