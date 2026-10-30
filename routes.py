@@ -20,6 +20,7 @@ from database import (
     reported_quantities,
 )
 from gpt_extraction import GPTExtractor
+from clinical_flags import flags_for
 from datetime import datetime
 import os
 import json
@@ -178,7 +179,12 @@ def predict():
 
     # Deferred import: the application module imports this blueprint at
     # load time, so importing it at module scope would be circular.
-    from app import combine_severity, predict_risk, prediction_error_response
+    from app import (
+        ModelsUnavailable,
+        combine_severity,
+        predict_risk,
+        prediction_error_response,
+    )
 
     try:
         panel = panel_from_mapping(data)
@@ -194,6 +200,29 @@ def predict():
         predictions, flags, _ = predict_risk(
             panel, request_id=request_id, user_id=user_id, report_id=report_id
         )
+    except ModelsUnavailable as exc:
+        # The CTCAE grading is a rules engine and needs no model, so a
+        # missing artefact should not cost the caller the grading too.
+        # Nothing is stored: a grading-only result is not a prediction.
+        prediction_log.log_refusal(
+            request_id=request_id,
+            reason='models_unavailable',
+            detail=str(exc),
+            raw_input=data,
+            user_id=user_id,
+        )
+        return jsonify({
+            'success': True,
+            'request_id': request_id,
+            'prediction_id': None,
+            'predictions': None,
+            'models_available': False,
+            'notice': ('Statistical risk prediction is unavailable: the '
+                       'previous models were withdrawn. Clinical grading '
+                       'below is rule-based (CTCAE v5.0) and unaffected.'),
+            'flags': [f.as_dict() for f in flags_for(panel)],
+            'input_values': panel.as_dict(),
+        }), 200
     except Exception as exc:
         handled = prediction_error_response(exc, request_id, data, user_id=user_id)
         if handled is not None:
@@ -355,4 +384,3 @@ def get_prediction(prediction_id):
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-

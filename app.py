@@ -367,6 +367,28 @@ def predict_legacy():
             }), 400
 
         predictions, flags, _ = predict_risk(panel, request_id=request_id)
+    except ModelsUnavailable as exc:
+        # The CTCAE grading is a rules engine and needs no model, so a
+        # missing artefact should not cost the caller the grading too.
+        # Return the flags and name the statistical estimate as the part
+        # that is unavailable.
+        prediction_log.log_refusal(
+            request_id=request_id,
+            reason='models_unavailable',
+            detail=str(exc),
+            raw_input=data,
+        )
+        return jsonify({
+            'success': True,
+            'request_id': request_id,
+            'predictions': None,
+            'models_available': False,
+            'notice': ('Statistical risk prediction is unavailable: the '
+                       'previous models were withdrawn. Clinical grading '
+                       'below is rule-based (CTCAE v5.0) and unaffected.'),
+            'flags': [f.as_dict() for f in flags_for(panel)],
+            'input_values': panel.as_dict(),
+        })
     except Exception as exc:
         handled = prediction_error_response(exc, request_id, data)
         if handled is not None:
@@ -384,7 +406,6 @@ def predict_legacy():
         'flags': [f.as_dict() for f in flags],
         'input_values': panel.as_dict(),
     })
-
 
 # Export and sharing routes
 @app.route('/api/export/pdf/<int:prediction_id>', methods=['GET'])

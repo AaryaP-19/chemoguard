@@ -315,7 +315,7 @@ window.triggerPrediction = async function triggerPrediction() {
             }
             // Use combined_toxicity or combined_severity
             const combinedToxicity = data.combined_toxicity || data.combined_severity || 'Low';
-            displayResults(data.predictions, combinedToxicity);
+            displayResults(data.predictions, combinedToxicity, data);
             
             // Scroll to results after a short delay
             setTimeout(() => {
@@ -351,16 +351,41 @@ async function handlePrediction(e) {
     await window.triggerPrediction();
 }
 
-// Display results
-function displayResults(predictions, combinedSeverity) {
+// Display results.
+// A response may carry no predictions at all: the statistical models were
+// withdrawn, and the server now returns the CTCAE grading on its own
+// rather than failing the whole request. Render whichever it sent.
+function displayResults(predictions, combinedSeverity, data) {
     const resultsDiv = document.getElementById('results');
     const gridDiv = document.getElementById('resultsGrid');
-    
+    const severityDiv = document.getElementById('combinedSeverity');
+
     gridDiv.innerHTML = '';
-    
+
+    if (!predictions) {
+        severityDiv.innerHTML = `
+            <h3>Clinical Grading (CTCAE v5.0)</h3>
+            <p style="margin:8px 0 0;font-size:0.9em;color:#5f6b7a;">
+                ${data && data.notice ? data.notice : 'Rule-based grading only.'}
+            </p>
+        `;
+        severityDiv.className = 'combined-severity';
+        severityDiv.style.display = 'block';
+
+        const flags = (data && data.flags) || [];
+        if (flags.length === 0) {
+            gridDiv.innerHTML = '<p style="color:#7f8c8d;">No gradable values supplied.</p>';
+        } else {
+            flags.forEach(flag => gridDiv.appendChild(createFlagCard(flag)));
+        }
+
+        resultsDiv.style.display = 'block';
+        resultsDiv.scrollIntoView({ behavior: 'smooth' });
+        return;
+    }
+
     // Combined hematological toxicity
     if (combinedSeverity) {
-        const severityDiv = document.getElementById('combinedSeverity');
         const severityText = combinedSeverity === 'Moderate' ? 'MODERATE' : combinedSeverity.toUpperCase();
         severityDiv.innerHTML = `
             <h3>Combined Hematological Toxicity</h3>
@@ -378,8 +403,47 @@ function displayResults(predictions, combinedSeverity) {
         }
     });
 
+    // Grading travels with a prediction too, when the server sends it.
+    if (data && data.flags && data.flags.length) {
+        data.flags.forEach(flag => gridDiv.appendChild(createFlagCard(flag)));
+    }
+
     resultsDiv.style.display = 'block';
     resultsDiv.scrollIntoView({ behavior: 'smooth' });
+}
+
+// Create a card for one CTCAE flag. Both the measured value and the value
+// it was compared as are shown: if a unit conversion ever goes wrong, the
+// two disagreeing is visible on the page rather than silent.
+function createFlagCard(flag) {
+    const card = document.createElement('div');
+    card.className = 'result-card';
+
+    const colours = {
+        none: '#2b7a4b',
+        mild: '#c77700',
+        moderate: '#c75a00',
+        severe: '#b52b27',
+        'life-threatening': '#8f1d1d'
+    };
+    const colour = colours[flag.severity] || '#5f6b7a';
+    const title = flag.condition.charAt(0).toUpperCase() + flag.condition.slice(1);
+    const label = flag.grade === 0 ? 'NORMAL' : `GRADE ${flag.grade}`;
+
+    card.innerHTML = `
+        <div class="result-header">
+            <h3>${title}</h3>
+            <span class="risk-badge" style="background:${colour};color:#fff;">${label}</span>
+        </div>
+        <p style="margin:10px 0 6px;">${flag.description}</p>
+        <p style="font-size:0.82em;color:#7f8c8d;margin:0;">
+            Reported ${flag.measured.value} ${flag.measured.unit}
+            &middot; compared as ${flag.compared_as.value} ${flag.compared_as.unit}
+            &middot; ${flag.criteria}
+        </p>
+    `;
+
+    return card;
 }
 
 // Create risk card
@@ -635,6 +699,12 @@ function displayHistory(predictions) {
         return;
     }
     
+    // A stored prediction may predate the model withdrawal, or may have
+    // been saved with grading only. Fall back rather than throwing on a
+    // missing risk field.
+    const riskOf = (v) => (v == null ? 'N/A' : String(v));
+    const classOf = (v) => (v == null ? 'na' : String(v).toLowerCase());
+
     list.innerHTML = predictions.map(pred => `
         <div class="history-item">
             <div style="display: flex; justify-content: space-between; align-items: start;">
@@ -644,13 +714,13 @@ function displayHistory(predictions) {
                         ${new Date(pred.prediction_date).toLocaleString()}
                     </p>
                     <div style="display: flex; gap: 15px; margin-top: 10px;">
-                        <span>Anemia: <strong class="risk-${pred.anemia_risk.toLowerCase()}">${pred.anemia_risk}</strong></span>
-                        <span>Neutropenia: <strong class="risk-${pred.neutropenia_risk.toLowerCase()}">${pred.neutropenia_risk}</strong></span>
-                        <span>Thrombocytopenia: <strong class="risk-${pred.thrombocytopenia_risk.toLowerCase()}">${pred.thrombocytopenia_risk}</strong></span>
+                        <span>Anemia: <strong class="risk-${classOf(pred.anemia_risk)}">${riskOf(pred.anemia_risk)}</strong></span>
+                        <span>Neutropenia: <strong class="risk-${classOf(pred.neutropenia_risk)}">${riskOf(pred.neutropenia_risk)}</strong></span>
+                        <span>Thrombocytopenia: <strong class="risk-${classOf(pred.thrombocytopenia_risk)}">${riskOf(pred.thrombocytopenia_risk)}</strong></span>
                     </div>
                     <p style="margin-top: 10px;">
                         <strong>Combined Severity:</strong> 
-                        <span class="risk-${pred.combined_severity.toLowerCase()}">${pred.combined_severity}</span>
+                        <span class="risk-${classOf(pred.combined_severity)}">${riskOf(pred.combined_severity)}</span>
                     </p>
                 </div>
                 <div>
@@ -787,4 +857,3 @@ function showError(message, type = 'error') {
         errorDiv.style.display = 'none';
     }, 5000);
 }
-
